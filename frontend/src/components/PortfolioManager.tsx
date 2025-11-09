@@ -61,10 +61,11 @@ function portfolioToForm(portfolio: Portfolio): PortfolioFormState {
 }
 
 type PortfolioManagerProps = {
+    setupId: string;
     initialPortfolios: PortfolioListResponse;
 };
 
-export function PortfolioManager({ initialPortfolios }: PortfolioManagerProps) {
+export function PortfolioManager({ setupId, initialPortfolios }: PortfolioManagerProps) {
     const [portfolios, setPortfolios] = useState<Portfolio[]>(
         initialPortfolios.portfolios,
     );
@@ -177,14 +178,14 @@ export function PortfolioManager({ initialPortfolios }: PortfolioManagerProps) {
             }
 
             if (editingId) {
-                const updated = await updatePortfolio(editingId, payload);
+                const updated = await updatePortfolio(setupId, editingId, payload);
                 setPortfolios((current) =>
                     current.map((portfolio) =>
                         portfolio.id === editingId ? updated : portfolio,
                     ),
                 );
             } else {
-                const created = await createPortfolio(payload);
+                const created = await createPortfolio(setupId, payload);
                 setPortfolios((current) => [...current, created]);
             }
 
@@ -213,7 +214,7 @@ export function PortfolioManager({ initialPortfolios }: PortfolioManagerProps) {
         setSubmitting(true);
         setError(null);
         try {
-            await deletePortfolio(portfolioId);
+            await deletePortfolio(setupId, portfolioId);
             setPortfolios((current) =>
                 current.filter((portfolio) => portfolio.id !== portfolioId),
             );
@@ -373,7 +374,7 @@ export function PortfolioManager({ initialPortfolios }: PortfolioManagerProps) {
                                     </div>
                                     <div className="flex gap-2">
                                         <Link
-                                            href={`/portfolios/${portfolio.id}`}
+                                            href={`/setups/${setupId}/portfolios/${portfolio.id}`}
                                             className="rounded-full border border-zinc-300 px-3 py-1 text-sm font-medium text-zinc-700 transition hover:border-indigo-300 hover:text-indigo-600 dark:border-zinc-600 dark:text-zinc-300 dark:hover:border-indigo-500 dark:hover:text-indigo-300"
                                         >
                                             Inspect

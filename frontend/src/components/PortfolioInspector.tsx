@@ -402,8 +402,8 @@ export function PortfolioInspector({ portfolio, snapshot, history }: PortfolioIn
                 type="button"
                 onClick={() => setSelectedSymbol(symbol)}
                 className={`flex flex-col gap-2 rounded-2xl border px-4 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive
-                    ? 'border-indigo-300 bg-indigo-50 dark:border-indigo-500/50 dark:bg-indigo-500/10'
-                    : 'border-zinc-200 bg-white hover:border-indigo-200 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-indigo-500/40'
+                  ? 'border-indigo-300 bg-indigo-50 dark:border-indigo-500/50 dark:bg-indigo-500/10'
+                  : 'border-zinc-200 bg-white hover:border-indigo-200 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-indigo-500/40'
                   }`}
               >
                 <div className="flex items-center justify-between">

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Dict, List
 
 import requests
@@ -10,30 +10,25 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from .models import (
     CombinedHistoryResponse,
     CombinedSnapshotResponse,
-    GlobalEndDateUpdate,
-    GlobalStartDateResponse,
-    GlobalStartDateUpdate,
     PortfolioCreate,
+    PortfolioHistoryPoint,
+    PortfolioHistoryResponse,
     PortfolioListResponse,
     PortfolioResponse,
+    PortfolioSetupCreate,
+    PortfolioSetupListResponse,
+    PortfolioSetupResponse,
+    PortfolioSetupUpdate,
     PortfolioSnapshotResponse,
-    PortfolioHistoryResponse,
     PortfolioUpdate,
-    PortfolioHistoryPoint,
     TickerPrice,
 )
-
-
-
 
 logger = logging.getLogger(__name__)
 
 
 def _settings(request: Request):
     return getattr(request.app.state, "settings", None)
-
-
-router = APIRouter(prefix="/api/portfolios", tags=["Portfolios"])
 
 
 def _store(request: Request):
@@ -144,12 +139,6 @@ def _fetch_historical_bars(
     return {symbol: bars_payload.get(symbol, []) for symbol in symbols}
 
 
-
-
-
-
-
-
 def _build_portfolio_history(
     symbols: List[str],
     weights: Dict[str, float],
@@ -217,14 +206,75 @@ def _build_portfolio_history(
     return history
 
 
-@router.get("/combined/snapshot", response_model=CombinedSnapshotResponse)
-async def combined_snapshot(request: Request) -> CombinedSnapshotResponse:
+setups_router = APIRouter(prefix="/api/setups", tags=["Portfolio Setups"])
+portfolios_router = APIRouter(prefix="/api/setups/{setup_id}/portfolios", tags=["Portfolios"])
+
+
+@setups_router.get("", response_model=PortfolioSetupListResponse)
+async def list_setups(request: Request) -> PortfolioSetupListResponse:
     store = _store(request)
-    symbol_allocations = store.combined_symbol_allocations()
+    return store.list_setups()
+
+
+@setups_router.post("", response_model=PortfolioSetupResponse, status_code=status.HTTP_201_CREATED)
+async def create_setup(request: Request, payload: PortfolioSetupCreate) -> PortfolioSetupResponse:
+    store = _store(request)
+    try:
+        setup = store.create_setup(payload)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    await _refresh_feed_subscriptions(request)
+    return PortfolioSetupResponse(setup=setup)
+
+
+@setups_router.get("/{setup_id}", response_model=PortfolioSetupResponse)
+async def read_setup(request: Request, setup_id: str) -> PortfolioSetupResponse:
+    store = _store(request)
+    try:
+        setup = store.get_setup(setup_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return PortfolioSetupResponse(setup=setup)
+
+
+@setups_router.put("/{setup_id}", response_model=PortfolioSetupResponse)
+async def update_setup(request: Request, setup_id: str, payload: PortfolioSetupUpdate) -> PortfolioSetupResponse:
+    store = _store(request)
+    try:
+        setup = store.update_setup(setup_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    await _refresh_feed_subscriptions(request)
+    return PortfolioSetupResponse(setup=setup)
+
+
+@setups_router.delete("/{setup_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_setup(request: Request, setup_id: str) -> None:
+    store = _store(request)
+    try:
+        store.delete_setup(setup_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    await _refresh_feed_subscriptions(request)
+
+
+@setups_router.get("/{setup_id}/snapshot", response_model=CombinedSnapshotResponse)
+async def setup_snapshot(request: Request, setup_id: str) -> CombinedSnapshotResponse:
+    store = _store(request)
+    try:
+        setup = store.get_setup(setup_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    symbol_allocations = store.setup_symbol_allocations(setup_id)
     symbols = sorted(symbol_allocations.keys())
     settings = _settings(request)
-
     quotes_map = _fetch_latest_trades(settings, symbols) if symbols else {}
+
     quotes: List[TickerPrice] = []
     for symbol in symbols:
         base_quote = quotes_map.get(symbol)
@@ -236,40 +286,41 @@ async def combined_snapshot(request: Request) -> CombinedSnapshotResponse:
         quotes.append(quote)
 
     return CombinedSnapshotResponse(
-        total_allocation_percent=store.total_allocation_percent(),
-        portfolio_count=store.portfolio_count(),
-        earliest_start_date=store.combined_start_date(),
-        latest_end_date=store.combined_end_date(),
+        total_allocation_percent=store.setup_total_allocation(setup_id),
+        portfolio_count=store.setup_portfolio_count(setup_id),
+        earliest_start_date=setup.start_date,
+        latest_end_date=setup.end_date,
         symbol_allocations=symbol_allocations,
         quotes=quotes,
     )
 
 
-@router.get("/combined/history", response_model=CombinedHistoryResponse)
-async def combined_history(
+@setups_router.get("/{setup_id}/history", response_model=CombinedHistoryResponse)
+async def setup_history(
     request: Request,
+    setup_id: str,
     start_date: date | None = Query(default=None, alias="startDate"),
 ) -> CombinedHistoryResponse:
     store = _store(request)
-    symbol_allocations = store.combined_symbol_allocations()
+    try:
+        setup = store.get_setup(setup_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    symbol_allocations = store.setup_symbol_allocations(setup_id)
     symbols = sorted(symbol_allocations.keys())
 
     today = datetime.now(tz=timezone.utc).date()
-    earliest_start = store.combined_start_date()
-    earliest_date = earliest_start.date() if earliest_start is not None else today
+    setup_start = setup.start_date.date()
+    setup_end = setup.end_date.date()
 
-    if start_date is None or start_date < earliest_date:
-        start_date_obj = earliest_date
-    else:
-        start_date_obj = start_date
+    start_date_obj = start_date or setup_start
+    if start_date_obj < setup_start:
+        start_date_obj = setup_start
+    if start_date_obj > setup_end:
+        start_date_obj = setup_end
 
-    combined_start_dt = store.combined_start_date()
-    combined_start = combined_start_dt.date() if combined_start_dt else None
-    combined_end_dt = store.combined_end_date()
-    combined_end = combined_end_dt.date() if combined_end_dt else None
-    effective_end = combined_end if combined_end is not None else today
-    if start_date_obj > effective_end:
-        start_date_obj = effective_end
+    effective_end = setup_end if setup_end <= today else today
 
     settings = _settings(request)
     bars = _fetch_historical_bars(settings, symbols, start_date_obj, effective_end) if symbols else {}
@@ -289,46 +340,82 @@ async def combined_history(
     )
 
 
-@router.post("/combined/start-date", response_model=CombinedSnapshotResponse)
-async def update_combined_start_date(request: Request, payload: GlobalStartDateUpdate) -> CombinedSnapshotResponse:
+@portfolios_router.get("", response_model=PortfolioListResponse)
+async def list_setup_portfolios(request: Request, setup_id: str) -> PortfolioListResponse:
     store = _store(request)
     try:
-        store.set_global_start_date(payload.start_date)
+        return store.list_portfolios(setup_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@portfolios_router.post("", response_model=PortfolioResponse, status_code=status.HTTP_201_CREATED)
+async def create_setup_portfolio(request: Request, setup_id: str, payload: PortfolioCreate) -> PortfolioResponse:
+    store = _store(request)
+    try:
+        response = store.create_portfolio(setup_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return await combined_snapshot(request)
-
-
-@router.post("/combined/end-date", response_model=CombinedSnapshotResponse)
-async def update_combined_end_date(request: Request, payload: GlobalEndDateUpdate) -> CombinedSnapshotResponse:
-    store = _store(request)
-    try:
-        store.set_global_end_date(payload.end_date)
-    except ValueError as exc:
+    except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return await combined_snapshot(request)
+    await _refresh_feed_subscriptions(request)
+    return response
 
 
-@router.get("", response_model=PortfolioListResponse)
-async def list_portfolios(request: Request) -> PortfolioListResponse:
-    store = _store(request)
-    return store.list_portfolios()
+def _ensure_portfolio_belongs(store, setup_id: str, portfolio_id: str) -> None:
+    actual = store.portfolio_setup(portfolio_id)
+    if actual != setup_id:
+        raise KeyError(f"Portfolio '{portfolio_id}' not found in setup '{setup_id}'")
 
 
-@router.get("/{portfolio_id}", response_model=PortfolioResponse)
-async def read_portfolio(request: Request, portfolio_id: str) -> PortfolioResponse:
+@portfolios_router.get("/{portfolio_id}", response_model=PortfolioResponse)
+async def read_setup_portfolio(request: Request, setup_id: str, portfolio_id: str) -> PortfolioResponse:
     store = _store(request)
     try:
+        _ensure_portfolio_belongs(store, setup_id, portfolio_id)
         portfolio = store.get_portfolio(portfolio_id)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return PortfolioResponse(portfolio=portfolio)
 
 
-@router.get("/{portfolio_id}/snapshot", response_model=PortfolioSnapshotResponse)
-async def portfolio_snapshot(request: Request, portfolio_id: str) -> PortfolioSnapshotResponse:
+@portfolios_router.put("/{portfolio_id}", response_model=PortfolioResponse)
+async def update_setup_portfolio(
+    request: Request,
+    setup_id: str,
+    portfolio_id: str,
+    payload: PortfolioUpdate,
+) -> PortfolioResponse:
     store = _store(request)
     try:
+        _ensure_portfolio_belongs(store, setup_id, portfolio_id)
+        response = store.update_portfolio(portfolio_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    await _refresh_feed_subscriptions(request)
+    return response
+
+
+@portfolios_router.delete("/{portfolio_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_setup_portfolio(request: Request, setup_id: str, portfolio_id: str) -> None:
+    store = _store(request)
+    try:
+        _ensure_portfolio_belongs(store, setup_id, portfolio_id)
+        store.delete_portfolio(portfolio_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    await _refresh_feed_subscriptions(request)
+
+
+@portfolios_router.get("/{portfolio_id}/snapshot", response_model=PortfolioSnapshotResponse)
+async def setup_portfolio_snapshot(request: Request, setup_id: str, portfolio_id: str) -> PortfolioSnapshotResponse:
+    store = _store(request)
+    try:
+        _ensure_portfolio_belongs(store, setup_id, portfolio_id)
         portfolio = store.get_portfolio(portfolio_id)
         weights = store.symbol_weights(portfolio_id)
     except KeyError as exc:
@@ -351,53 +438,43 @@ async def portfolio_snapshot(request: Request, portfolio_id: str) -> PortfolioSn
     return PortfolioSnapshotResponse(portfolio=portfolio, quotes=quotes)
 
 
-
-
-@router.get("/{portfolio_id}/history", response_model=PortfolioHistoryResponse)
-async def portfolio_history(
+@portfolios_router.get("/{portfolio_id}/history", response_model=PortfolioHistoryResponse)
+async def setup_portfolio_history(
     request: Request,
+    setup_id: str,
     portfolio_id: str,
     start_date: date | None = Query(default=None, alias="startDate"),
 ) -> PortfolioHistoryResponse:
     store = _store(request)
     try:
+        _ensure_portfolio_belongs(store, setup_id, portfolio_id)
         portfolio = store.get_portfolio(portfolio_id)
         weights = store.symbol_weights(portfolio_id)
+        setup = store.get_setup(setup_id)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     today = datetime.now(tz=timezone.utc).date()
-    combined_start_dt = store.combined_start_date()
-    combined_start = combined_start_dt.date() if combined_start_dt else None
-    combined_end_dt = store.combined_end_date()
-    combined_end = combined_end_dt.date() if combined_end_dt else None
-    portfolio_start = (portfolio.start_date or portfolio.created_at).date()
+    setup_start = setup.start_date.date()
+    setup_end = setup.end_date.date()
 
-    if start_date is None:
-        if combined_start is not None:
-            start_date_obj = combined_start
-        else:
-            start_date_obj = portfolio_start
-    else:
-        start_date_obj = start_date
+    requested_start = start_date or setup_start
+    if requested_start < setup_start:
+        requested_start = setup_start
+    if requested_start > setup_end:
+        requested_start = setup_end
 
-    if combined_start is not None and start_date_obj < combined_start:
-        start_date_obj = combined_start
-
-    effective_end = combined_end if combined_end is not None else today
-    if start_date_obj > effective_end:
-        start_date_obj = effective_end
+    effective_end = setup_end if setup_end <= today else today
 
     settings = _settings(request)
-
-    bars = _fetch_historical_bars(settings, portfolio.symbols, start_date_obj, effective_end)
+    bars = _fetch_historical_bars(settings, portfolio.symbols, requested_start, effective_end)
     history_points = _build_portfolio_history(portfolio.symbols, weights, bars)
 
     if history_points:
         history_start = history_points[0].date
         history_end = history_points[-1].date
     else:
-        history_start = datetime.combine(start_date_obj, datetime.min.time(), tzinfo=timezone.utc)
+        history_start = datetime.combine(requested_start, datetime.min.time(), tzinfo=timezone.utc)
         history_end = datetime.combine(effective_end, datetime.min.time(), tzinfo=timezone.utc)
 
     return PortfolioHistoryResponse(
@@ -406,34 +483,3 @@ async def portfolio_history(
         end_date=history_end,
         history=history_points,
     )
-
-@router.post("", status_code=status.HTTP_201_CREATED, response_model=PortfolioResponse)
-async def create_portfolio(request: Request, payload: PortfolioCreate) -> PortfolioResponse:
-    store = _store(request)
-    try:
-        response = store.create_portfolio(payload)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    await _refresh_feed_subscriptions(request)
-    return response
-
-
-@router.put("/{portfolio_id}", response_model=PortfolioResponse)
-async def update_portfolio(request: Request, portfolio_id: str, payload: PortfolioUpdate) -> PortfolioResponse:
-    store = _store(request)
-    try:
-        response = store.update_portfolio(portfolio_id, payload)
-    except KeyError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    await _refresh_feed_subscriptions(request)
-    return response
-
-
-@router.delete("/{portfolio_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_portfolio(request: Request, portfolio_id: str) -> None:
-    store = _store(request)
-    try:
-        store.delete_portfolio(portfolio_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    await _refresh_feed_subscriptions(request)

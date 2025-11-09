@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .alpaca_feed import AlpacaFeedService
 from .config import get_settings
 from .portfolio_store import PortfolioStore
-from .routes_portfolios import router as portfolios_router
+from .routes_portfolios import portfolios_router, setups_router
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    app.include_router(setups_router)
     app.include_router(portfolios_router)
 
     @app.get("/health", tags=["Health"])
@@ -72,11 +73,10 @@ def create_app() -> FastAPI:
         portfolio_count = 0
         total_allocation = 0.0
         if store is not None:
-            portfolio_snapshot = store.list_portfolios()
-            portfolio_count = len(portfolio_snapshot.portfolios)
-            total_allocation = sum(
-                portfolio.allocation_percent for portfolio in portfolio_snapshot.portfolios
-            )
+            setups = store.list_setups().setups
+            for setup in setups:
+                portfolio_count += store.setup_portfolio_count(setup.id)
+                total_allocation += store.setup_total_allocation(setup.id)
         return {
             "feedEnabled": settings.enable_alpaca_feed,
             "hasCredentials": settings.has_alpaca_credentials,

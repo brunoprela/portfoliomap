@@ -14,6 +14,10 @@ from .models import (
     PortfolioListResponse,
     PortfolioResponse,
     PortfolioUpdate,
+    PortfolioSetup,
+    PortfolioSetupCreate,
+    PortfolioSetupListResponse,
+    PortfolioSetupUpdate,
 )
 
 
@@ -36,20 +40,31 @@ class PortfolioStore:
         "updated_at",
     )
     _SYMBOL_COLUMNS: Tuple[str, ...] = ("portfolio_id", "symbol", "weight")
-    _STATE_COLUMNS: Tuple[str, ...] = ("global_start_date", "global_end_date", "updated_at")
+    _SETUP_COLUMNS: Tuple[str, ...] = (
+        "id",
+        "name",
+        "description",
+        "start_date",
+        "end_date",
+        "created_at",
+        "updated_at",
+    )
+    _SETUP_PORTFOLIO_COLUMNS: Tuple[str, ...] = ("setup_id", "portfolio_id")
 
     def __init__(self, storage_root: Path) -> None:
         self._root = storage_root if storage_root.suffix == "" else storage_root.parent
         self._root.mkdir(parents=True, exist_ok=True)
         self._portfolios_path = self._root / "portfolios"
         self._symbols_path = self._root / "portfolio_symbols"
-        self._state_path = self._root / "portfolio_state"
+        self._setups_path = self._root / "portfolio_setups"
+        self._setup_portfolios_path = self._root / "setup_portfolios"
 
         self._lock = Lock()
         self._portfolios: Dict[str, Portfolio] = {}
         self._portfolio_symbols: Dict[str, Dict[str, float]] = {}
-        self._global_start_date: Optional[datetime] = None
-        self._global_end_date: Optional[datetime] = None
+        self._setups: Dict[str, PortfolioSetup] = {}
+        self._setup_portfolios: Dict[str, List[str]] = {}
+        self._portfolio_to_setup: Dict[str, str] = {}
 
         self._load()
 
@@ -80,7 +95,8 @@ class PortfolioStore:
         with self._lock:
             portfolio_df = self._read_table(self._portfolios_path, self._PORTFOLIO_COLUMNS)
             symbols_df = self._read_table(self._symbols_path, self._SYMBOL_COLUMNS)
-            state_df = self._read_table(self._state_path, self._STATE_COLUMNS)
+            setups_df = self._read_table(self._setups_path, self._SETUP_COLUMNS)
+            mapping_df = self._read_table(self._setup_portfolios_path, self._SETUP_PORTFOLIO_COLUMNS)
 
             symbol_map: Dict[str, Dict[str, float]] = {}
             for record in symbols_df.to_dict("records"):
@@ -114,27 +130,82 @@ class PortfolioStore:
 
             self._portfolio_symbols = symbol_map
 
-            if not state_df.empty:
-                raw_start = state_df.iloc[-1].get("global_start_date")
-                self._global_start_date = self._parse_timestamp(str(raw_start) if raw_start else None)
-                raw_end = state_df.iloc[-1].get("global_end_date")
-                self._global_end_date = self._parse_timestamp(str(raw_end) if raw_end else None)
+            self._setups = {}
+            self._setup_portfolios = {}
+            self._portfolio_to_setup = {}
+
+            if not setups_df.empty:
+                for record in setups_df.to_dict("records"):
+                    sid = str(record["id"])
+                    created_at = self._parse_timestamp(record.get("created_at")) or _timestamp()
+                    updated_at = self._parse_timestamp(record.get("updated_at")) or created_at
+                    start_date = self._parse_timestamp(record.get("start_date")) or created_at
+                    end_date = self._parse_timestamp(record.get("end_date")) or updated_at
+                    description = record.get("description") or None
+                    setup = PortfolioSetup(
+                        id=sid,
+                        name=str(record.get("name") or "").strip(),
+                        description=description,
+                        start_date=self._normalize_datetime(start_date),
+                        end_date=self._normalize_datetime(end_date),
+                        created_at=created_at,
+                        updated_at=updated_at,
+                        portfolio_ids=[],
+                    )
+                    self._setups[sid] = setup
+                    self._setup_portfolios[sid] = []
+
+                for record in mapping_df.to_dict("records"):
+                    sid = str(record["setup_id"])
+                    pid = str(record["portfolio_id"])
+                    if sid in self._setups and pid in self._portfolios:
+                        self._setup_portfolios.setdefault(sid, []).append(pid)
+                        self._portfolio_to_setup[pid] = sid
             else:
-                self._global_start_date = None
-                self._global_end_date = None
+                default_id = str(uuid4())
+                now = _timestamp()
+                start_date = (
+                    min((portfolio.start_date for portfolio in self._portfolios.values()), default=now)
+                    if self._portfolios
+                    else now
+                )
+                setup = PortfolioSetup(
+                    id=default_id,
+                    name="Default Portfolio Setup",
+                    description="Migrated from legacy configuration",
+                    start_date=self._normalize_datetime(start_date),
+                    end_date=now,
+                    created_at=now,
+                    updated_at=now,
+                    portfolio_ids=[],
+                )
+                self._setups[default_id] = setup
+                self._setup_portfolios[default_id] = []
 
-            if self._global_start_date is None and self._portfolios:
-                earliest = min(portfolio.start_date for portfolio in self._portfolios.values())
-                self._global_start_date = earliest
+            if not self._setups:
+                now = _timestamp()
+                sid = str(uuid4())
+                setup = PortfolioSetup(
+                    id=sid,
+                    name="Portfolio Setup",
+                    description=None,
+                    start_date=now,
+                    end_date=now,
+                    created_at=now,
+                    updated_at=now,
+                    portfolio_ids=[],
+                )
+                self._setups[sid] = setup
+                self._setup_portfolios[sid] = []
 
-            if (
-                self._global_start_date is not None
-                and self._global_end_date is not None
-                and self._global_end_date < self._global_start_date
-            ):
-                self._global_end_date = self._global_start_date
+            first_setup_id = next(iter(self._setups.keys()))
+            for pid in self._portfolios:
+                sid = self._portfolio_to_setup.get(pid)
+                if sid is None or sid not in self._setups:
+                    self._setup_portfolios.setdefault(first_setup_id, []).append(pid)
+                    self._portfolio_to_setup[pid] = first_setup_id
 
-            self._enforce_global_start_date()
+            self._enforce_setup_constraints()
 
     @staticmethod
     def _parse_timestamp(value: Optional[str]) -> Optional[datetime]:
@@ -146,14 +217,16 @@ class PortfolioStore:
             return None
 
     def _save(self) -> None:
-        self._enforce_global_start_date()
+        self._enforce_setup_constraints()
         portfolios_frame = self._build_portfolios_frame()
         symbols_frame = self._build_symbols_frame()
-        state_frame = self._build_state_frame()
+        setups_frame = self._build_setups_frame()
+        mapping_frame = self._build_setup_portfolios_frame()
 
         self._write_table(self._portfolios_path, portfolios_frame)
         self._write_table(self._symbols_path, symbols_frame)
-        self._write_table(self._state_path, state_frame)
+        self._write_table(self._setups_path, setups_frame)
+        self._write_table(self._setup_portfolios_path, mapping_frame)
 
     def _build_portfolios_frame(self) -> pd.DataFrame:
         records = []
@@ -190,20 +263,34 @@ class PortfolioStore:
             return pd.DataFrame(columns=pd.Index(self._SYMBOL_COLUMNS))
         return frame.loc[:, list(self._SYMBOL_COLUMNS)]
 
-    def _build_state_frame(self) -> pd.DataFrame:
-        records = [
-            {
-                "global_start_date": self._global_start_date.isoformat()
-                if self._global_start_date is not None
-                else "",
-                "global_end_date": self._global_end_date.isoformat()
-                if self._global_end_date is not None
-                else "",
-                "updated_at": _timestamp().isoformat(),
-            }
-        ]
+    def _build_setups_frame(self) -> pd.DataFrame:
+        records = []
+        for setup in self._setups.values():
+            records.append(
+                {
+                    "id": setup.id,
+                    "name": setup.name,
+                    "description": setup.description or "",
+                    "start_date": setup.start_date.isoformat(),
+                    "end_date": setup.end_date.isoformat(),
+                    "created_at": setup.created_at.isoformat(),
+                    "updated_at": setup.updated_at.isoformat(),
+                }
+            )
         frame = pd.DataFrame.from_records(records)
-        return frame.loc[:, list(self._STATE_COLUMNS)]
+        if frame.empty:
+            return pd.DataFrame(columns=pd.Index(self._SETUP_COLUMNS))
+        return frame.loc[:, list(self._SETUP_COLUMNS)]
+
+    def _build_setup_portfolios_frame(self) -> pd.DataFrame:
+        records = []
+        for sid, portfolio_ids in self._setup_portfolios.items():
+            for pid in portfolio_ids:
+                records.append({"setup_id": sid, "portfolio_id": pid})
+        frame = pd.DataFrame.from_records(records)
+        if frame.empty:
+            return pd.DataFrame(columns=pd.Index(self._SETUP_PORTFOLIO_COLUMNS))
+        return frame.loc[:, list(self._SETUP_PORTFOLIO_COLUMNS)]
 
     def _normalize_allocations(
         self,
@@ -254,40 +341,165 @@ class PortfolioStore:
             self._portfolio_symbols.pop(pid, None)
         return weights
 
+    def _normalize_datetime(self, value: Optional[datetime]) -> datetime:
+        dt = value or _timestamp()
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt
+
+    def _update_setup_metadata(self, setup_id: str) -> None:
+        assigned = sorted(set(self._setup_portfolios.get(setup_id, [])))
+        self._setup_portfolios[setup_id] = assigned
+        setup = self._setups[setup_id]
+        self._setups[setup_id] = setup.model_copy(
+            update={
+                "portfolio_ids": assigned,
+                "updated_at": _timestamp(),
+            }
+        )
+
+    def _enforce_setup_constraints(self) -> None:
+        if not self._setups:
+            return
+        for sid in list(self._setups.keys()):
+            assigned = sorted(pid for pid in self._setup_portfolios.get(sid, []) if pid in self._portfolios)
+            self._setup_portfolios[sid] = assigned
+            setup = self._setups[sid]
+            updated_setup = setup.model_copy(update={"portfolio_ids": assigned})
+            self._setups[sid] = updated_setup
+            for pid in assigned:
+                self._portfolio_to_setup[pid] = sid
+                portfolio = self._portfolios[pid]
+                if portfolio.start_date != updated_setup.start_date:
+                    self._portfolios[pid] = portfolio.model_copy(update={"start_date": updated_setup.start_date})
+
     def _validate_allocation_budget(
         self,
         requested: float,
+        setup_id: str,
         exclude_id: Optional[str] = None,
     ) -> None:
         total = 0.0
-        for existing_id, portfolio in self._portfolios.items():
-            if existing_id == exclude_id:
+        for portfolio_id in self._setup_portfolios.get(setup_id, []):
+            if portfolio_id == exclude_id:
                 continue
-            total += portfolio.allocation_percent
+            total += self._portfolios[portfolio_id].allocation_percent
         if total + requested > 1.0 + 1e-6:
-            raise ValueError("Total allocation across portfolios cannot exceed 100% of the Alpaca account")
+            raise ValueError("Total allocation across the setup cannot exceed 100% of the Alpaca account")
 
-    def list_portfolios(self) -> PortfolioListResponse:
+    def list_setups(self) -> PortfolioSetupListResponse:
         with self._lock:
-            portfolios = sorted(self._portfolios.values(), key=lambda item: item.created_at)
+            setups = sorted(self._setups.values(), key=lambda item: item.created_at)
+            return PortfolioSetupListResponse(setups=setups)
+
+    def get_setup(self, setup_id: str) -> PortfolioSetup:
+        with self._lock:
+            if setup_id not in self._setups:
+                raise KeyError(f"Portfolio setup '{setup_id}' not found")
+            return self._setups[setup_id]
+
+    def create_setup(self, payload: PortfolioSetupCreate) -> PortfolioSetup:
+        with self._lock:
+            now = _timestamp()
+            sid = str(uuid4())
+            start_date = self._normalize_datetime(payload.start_date)
+            end_date = self._normalize_datetime(payload.end_date)
+            if end_date < start_date:
+                end_date = start_date
+            setup = PortfolioSetup(
+                id=sid,
+                name=payload.name.strip(),
+                description=(payload.description.strip() if payload.description else None),
+                start_date=start_date,
+                end_date=end_date,
+                created_at=now,
+                updated_at=now,
+                portfolio_ids=[],
+            )
+            self._setups[sid] = setup
+            self._setup_portfolios[sid] = []
+            self._save()
+            return self._setups[sid]
+
+    def update_setup(self, setup_id: str, payload: PortfolioSetupUpdate) -> PortfolioSetup:
+        with self._lock:
+            if setup_id not in self._setups:
+                raise KeyError(f"Portfolio setup '{setup_id}' not found")
+            setup = self._setups[setup_id]
+            updated = setup.model_copy()
+
+            if payload.name is not None:
+                updated = updated.model_copy(update={"name": payload.name.strip()})
+            if payload.description is not None:
+                updated = updated.model_copy(update={"description": payload.description.strip() or None})
+            if payload.start_date is not None:
+                start_date = self._normalize_datetime(payload.start_date)
+                if payload.end_date is None and start_date > updated.end_date:
+                    updated = updated.model_copy(update={"end_date": start_date})
+                updated = updated.model_copy(update={"start_date": start_date})
+            if payload.end_date is not None:
+                end_date = self._normalize_datetime(payload.end_date)
+                if end_date < updated.start_date:
+                    raise ValueError("End date cannot be before start date")
+                updated = updated.model_copy(update={"end_date": end_date})
+
+            updated = updated.model_copy(update={"updated_at": _timestamp()})
+            self._setups[setup_id] = updated
+            self._enforce_setup_constraints()
+            self._save()
+            return self._setups[setup_id]
+
+    def delete_setup(self, setup_id: str) -> None:
+        with self._lock:
+            if setup_id not in self._setups:
+                raise KeyError(f"Portfolio setup '{setup_id}' not found")
+            if self._setup_portfolios.get(setup_id):
+                raise ValueError("Cannot delete a setup while it still contains portfolios")
+            del self._setups[setup_id]
+            self._setup_portfolios.pop(setup_id, None)
+            if not self._setups:
+                now = _timestamp()
+                sid = str(uuid4())
+                setup = PortfolioSetup(
+                    id=sid,
+                    name="Portfolio Setup",
+                    description=None,
+                    start_date=now,
+                    end_date=now,
+                    created_at=now,
+                    updated_at=now,
+                    portfolio_ids=[],
+                )
+                self._setups[sid] = setup
+                self._setup_portfolios[sid] = []
+            self._save()
+
+    def list_portfolios(self, setup_id: str) -> PortfolioListResponse:
+        with self._lock:
+            if setup_id not in self._setups:
+                raise KeyError(f"Portfolio setup '{setup_id}' not found")
+            portfolios = [
+                self._portfolios[pid]
+                for pid in self._setup_portfolios.get(setup_id, [])
+                if pid in self._portfolios
+            ]
+            portfolios.sort(key=lambda item: item.created_at)
             return PortfolioListResponse(portfolios=portfolios)
 
-    def create_portfolio(self, payload: PortfolioCreate) -> PortfolioResponse:
+    def create_portfolio(self, setup_id: str, payload: PortfolioCreate) -> PortfolioResponse:
         with self._lock:
+            if setup_id not in self._setups:
+                raise KeyError(f"Portfolio setup '{setup_id}' not found")
             allocation = float(payload.allocation_percent)
-            self._validate_allocation_budget(allocation)
+            self._validate_allocation_budget(allocation, setup_id)
 
             now = _timestamp()
             pid = str(uuid4())
             symbols = _normalize_symbols(payload.symbols)
-            normalized_start = self._normalize_start_date(payload.start_date)
-            if self._global_end_date is not None and normalized_start > self._global_end_date:
-                raise ValueError("Portfolio start date cannot be after the global end date")
-            if payload.start_date is not None or self._global_start_date is None:
-                self._global_start_date = normalized_start
-            start_date = self._global_start_date or normalized_start
-
             allocations_map = self._normalize_allocations(symbols, payload.allocations)
+            setup = self._setups[setup_id]
 
             portfolio = Portfolio(
                 id=pid,
@@ -296,29 +508,36 @@ class PortfolioStore:
                 symbols=symbols,
                 allocation_percent=allocation,
                 allocations=allocations_map,
-                start_date=start_date,
+                start_date=setup.start_date,
                 created_at=now,
                 updated_at=now,
             )
 
             self._portfolios[pid] = portfolio
             self._portfolio_symbols[pid] = allocations_map
+            self._setup_portfolios.setdefault(setup_id, []).append(pid)
+            self._portfolio_to_setup[pid] = setup_id
+            self._update_setup_metadata(setup_id)
             self._save()
-            portfolio_synced = self._portfolios[pid]
-            return PortfolioResponse(portfolio=portfolio_synced)
+            return PortfolioResponse(portfolio=self._portfolios[pid])
 
     def update_portfolio(self, portfolio_id: str, payload: PortfolioUpdate) -> PortfolioResponse:
         with self._lock:
             if portfolio_id not in self._portfolios:
                 raise KeyError(f"Portfolio '{portfolio_id}' not found")
+            setup_id = self._portfolio_to_setup.get(portfolio_id)
+            if setup_id is None or setup_id not in self._setups:
+                raise ValueError("Portfolio is not associated with a setup")
 
             portfolio = self._portfolios[portfolio_id]
             updated = portfolio.model_copy()
 
             if payload.name is not None:
-                updated.name = payload.name.strip()
+                updated = updated.model_copy(update={"name": payload.name.strip()})
             if payload.description is not None:
-                updated.description = payload.description.strip() or None
+                updated = updated.model_copy(update={"description": payload.description.strip() or None})
+            if payload.start_date is not None:
+                raise ValueError("Portfolio start date is managed by its setup")
 
             symbols = updated.symbols
             allocations_override = None
@@ -333,26 +552,19 @@ class PortfolioStore:
                 allocations_map = self._recalculate_symbol_weights(
                     portfolio_id, symbols, allocations_override
                 )
-                updated.symbols = symbols
-                updated.allocations = allocations_map
+                updated = updated.model_copy(update={"symbols": symbols, "allocations": allocations_map})
             else:
                 allocations_map = dict(self._portfolio_symbols.get(portfolio_id, {}) or {})
-                updated.allocations = allocations_map
+                updated = updated.model_copy(update={"allocations": allocations_map})
 
             if payload.allocation_percent is not None:
                 allocation = float(payload.allocation_percent)
-                self._validate_allocation_budget(allocation, exclude_id=portfolio_id)
-                updated.allocation_percent = allocation
+                self._validate_allocation_budget(allocation, setup_id, exclude_id=portfolio_id)
+                updated = updated.model_copy(update={"allocation_percent": allocation})
 
-            if payload.start_date is not None:
-                normalized_start = self._normalize_start_date(payload.start_date)
-                if self._global_end_date is not None and normalized_start > self._global_end_date:
-                    raise ValueError("Global start date cannot be after the global end date")
-                self._global_start_date = normalized_start
-                updated.start_date = normalized_start
-
-            updated.updated_at = _timestamp()
+            updated = updated.model_copy(update={"updated_at": _timestamp()})
             self._portfolios[portfolio_id] = updated
+            self._update_setup_metadata(setup_id)
             self._save()
             return PortfolioResponse(portfolio=self._portfolios[portfolio_id])
 
@@ -360,15 +572,16 @@ class PortfolioStore:
         with self._lock:
             if portfolio_id not in self._portfolios:
                 raise KeyError(f"Portfolio '{portfolio_id}' not found")
-
-            del self._portfolios[portfolio_id]
+            setup_id = self._portfolio_to_setup.get(portfolio_id)
+            if setup_id is not None:
+                self._setup_portfolios.setdefault(setup_id, [])
+                if portfolio_id in self._setup_portfolios[setup_id]:
+                    self._setup_portfolios[setup_id].remove(portfolio_id)
+                self._portfolio_to_setup.pop(portfolio_id, None)
+            self._portfolios.pop(portfolio_id, None)
             self._portfolio_symbols.pop(portfolio_id, None)
-            if not self._portfolios:
-                self._global_start_date = None
-            else:
-                self._global_start_date = min(
-                    portfolio.start_date for portfolio in self._portfolios.values()
-                )
+            if setup_id is not None and setup_id in self._setups:
+                self._update_setup_metadata(setup_id)
             self._save()
 
     def symbol_weights(self, portfolio_id: str) -> Dict[str, float]:
@@ -390,6 +603,10 @@ class PortfolioStore:
                 raise KeyError(f"Portfolio '{portfolio_id}' not found")
             return self._portfolios[portfolio_id]
 
+    def portfolio_setup(self, portfolio_id: str) -> Optional[str]:
+        with self._lock:
+            return self._portfolio_to_setup.get(portfolio_id)
+
     def all_symbols(self) -> List[str]:
         with self._lock:
             symbols: set[str] = set()
@@ -397,22 +614,29 @@ class PortfolioStore:
                 symbols.update(weights.keys())
             return sorted(symbols)
 
-    def portfolio_count(self) -> int:
+    def setup_portfolios(self, setup_id: str) -> List[Portfolio]:
         with self._lock:
-            return len(self._portfolios)
+            if setup_id not in self._setups:
+                raise KeyError(f"Portfolio setup '{setup_id}' not found")
+            return [
+                self._portfolios[pid]
+                for pid in self._setup_portfolios.get(setup_id, [])
+                if pid in self._portfolios
+            ]
 
-    def total_allocation_percent(self) -> float:
+    def setup_symbol_allocations(self, setup_id: str) -> Dict[str, float]:
         with self._lock:
-            return sum(portfolio.allocation_percent for portfolio in self._portfolios.values())
-
-    def combined_symbol_allocations(self) -> Dict[str, float]:
-        with self._lock:
+            if setup_id not in self._setups:
+                raise KeyError(f"Portfolio setup '{setup_id}' not found")
             combined: Dict[str, float] = {}
-            for portfolio_id, portfolio in self._portfolios.items():
+            for pid in self._setup_portfolios.get(setup_id, []):
+                portfolio = self._portfolios.get(pid)
+                if portfolio is None:
+                    continue
                 allocation = portfolio.allocation_percent
                 if allocation <= 0:
                     continue
-                weights = self._portfolio_symbols.get(portfolio_id)
+                weights = self._portfolio_symbols.get(pid)
                 symbols = portfolio.symbols
                 if not symbols:
                     continue
@@ -423,51 +647,31 @@ class PortfolioStore:
                     combined[symbol] = combined.get(symbol, 0.0) + allocation * weight
             return combined
 
-    def combined_start_date(self) -> Optional[datetime]:
+    def setup_total_allocation(self, setup_id: str) -> float:
         with self._lock:
-            return self._global_start_date
+            if setup_id not in self._setups:
+                raise KeyError(f"Portfolio setup '{setup_id}' not found")
+            return sum(
+                self._portfolios[pid].allocation_percent
+                for pid in self._setup_portfolios.get(setup_id, [])
+                if pid in self._portfolios
+            )
 
-    def combined_end_date(self) -> Optional[datetime]:
+    def setup_start_date(self, setup_id: str) -> datetime:
         with self._lock:
-            return self._global_end_date
+            if setup_id not in self._setups:
+                raise KeyError(f"Portfolio setup '{setup_id}' not found")
+            return self._setups[setup_id].start_date
 
-    def _normalize_start_date(self, value: Optional[datetime]) -> datetime:
-        start_date = value or _timestamp()
-        if start_date.tzinfo is None:
-            start_date = start_date.replace(tzinfo=timezone.utc)
-        else:
-            start_date = start_date.astimezone(timezone.utc)
-        return start_date
-
-    def _enforce_global_start_date(self) -> None:
-        if self._global_start_date is None:
-            return
-        for portfolio_id, portfolio in self._portfolios.items():
-            if portfolio.start_date != self._global_start_date:
-                updated = portfolio.model_copy()
-                updated.start_date = self._global_start_date
-                updated.updated_at = _timestamp()
-                self._portfolios[portfolio_id] = updated
-
-    def set_global_start_date(self, start_date: datetime) -> datetime:
+    def setup_end_date(self, setup_id: str) -> datetime:
         with self._lock:
-            normalized = self._normalize_start_date(start_date)
-            if self._global_end_date is not None and normalized > self._global_end_date:
-                raise ValueError("Global start date cannot be after the global end date")
-            self._global_start_date = normalized
-            for portfolio_id, portfolio in self._portfolios.items():
-                updated = portfolio.model_copy()
-                updated.start_date = normalized
-                updated.updated_at = _timestamp()
-                self._portfolios[portfolio_id] = updated
-            self._save()
-            return self._global_start_date
+            if setup_id not in self._setups:
+                raise KeyError(f"Portfolio setup '{setup_id}' not found")
+            return self._setups[setup_id].end_date
 
-    def set_global_end_date(self, end_date: datetime) -> datetime:
+    def setup_portfolio_count(self, setup_id: str) -> int:
         with self._lock:
-            normalized = self._normalize_start_date(end_date)
-            if self._global_start_date is not None and normalized < self._global_start_date:
-                raise ValueError("Global end date cannot be before the global start date")
-            self._global_end_date = normalized
-            self._save()
-            return self._global_end_date
+            if setup_id not in self._setups:
+                raise KeyError(f"Portfolio setup '{setup_id}' not found")
+            return len(self._setup_portfolios.get(setup_id, []))
+

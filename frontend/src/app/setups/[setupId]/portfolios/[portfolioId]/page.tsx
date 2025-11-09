@@ -1,35 +1,44 @@
-import Link from 'next/link';
-import { notFound } from 'next/navigation';
+import Link from "next/link";
+import { notFound } from "next/navigation";
 
-import { PortfolioInspector } from '@/components/PortfolioInspector';
-import type { PortfolioHistory, PortfolioSnapshot, TickerQuote } from '@/lib/api';
-import { fetchPortfolio, fetchPortfolioHistory, fetchPortfolioSnapshot } from '@/lib/api';
+import { PortfolioInspector } from "@/components/PortfolioInspector";
+import type { PortfolioHistory, PortfolioSnapshot, TickerQuote } from "@/lib/api";
+import {
+  fetchPortfolio,
+  fetchPortfolioHistory,
+  fetchPortfolioSnapshot,
+  fetchSetup,
+} from "@/lib/api";
 
-type PortfolioPageProps = {
-  params: Promise<{ id: string }>;
-  searchParams: Promise<{ startDate?: string }>;
+type PortfolioDetailPageProps = {
+  params: Promise<{ setupId: string; portfolioId: string }>;
 };
 
-export default async function PortfolioPage({ params, searchParams }: PortfolioPageProps) {
+export default async function PortfolioDetailPage({ params }: PortfolioDetailPageProps) {
   const resolvedParams = await params;
-  const portfolioId = decodeURIComponent(resolvedParams.id ?? '');
+  const setupId = decodeURIComponent(resolvedParams.setupId ?? "");
+  const portfolioId = decodeURIComponent(resolvedParams.portfolioId ?? "");
 
-  if (!portfolioId) {
+  if (!setupId || !portfolioId) {
     notFound();
   }
 
-  const resolvedSearch = (await searchParams) ?? {};
+  try {
+    await fetchSetup(setupId);
+  } catch {
+    notFound();
+  }
 
   let portfolio;
   try {
-    portfolio = await fetchPortfolio(portfolioId);
+    portfolio = await fetchPortfolio(setupId, portfolioId);
   } catch {
     notFound();
   }
 
   let snapshot: PortfolioSnapshot;
   try {
-    snapshot = await fetchPortfolioSnapshot(portfolioId);
+    snapshot = await fetchPortfolioSnapshot(setupId, portfolioId);
   } catch {
     const fallbackQuotes: TickerQuote[] = portfolio.symbols.map((symbol) => ({
       symbol,
@@ -45,13 +54,9 @@ export default async function PortfolioPage({ params, searchParams }: PortfolioP
     };
   }
 
-  const searchStart = resolvedSearch?.startDate;
-  const portfolioStart = snapshot.portfolio.startDate ?? snapshot.portfolio.createdAt;
-  const initialStartDate = (searchStart ?? portfolioStart).slice(0, 10);
-
   let history: PortfolioHistory;
   try {
-    history = await fetchPortfolioHistory(portfolioId, initialStartDate);
+    history = await fetchPortfolioHistory(setupId, portfolioId, snapshot.portfolio.startDate.slice(0, 10));
   } catch {
     history = {
       portfolio: snapshot.portfolio,
@@ -62,13 +67,13 @@ export default async function PortfolioPage({ params, searchParams }: PortfolioP
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-14 bg-white px-6 py-16 text-zinc-900 dark:bg-black dark:text-zinc-100 sm:px-12 lg:px-28">
+    <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-10 bg-white px-6 py-16 text-zinc-900 dark:bg-black dark:text-zinc-100 sm:px-10 lg:px-14">
       <nav className="flex items-center justify-between text-sm text-zinc-500 dark:text-zinc-400">
         <Link
-          href="/"
+          href={`/setups/${setupId}`}
           className="font-medium text-indigo-600 hover:text-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-300"
         >
-          ← Back to dashboard
+          ← Back to setup
         </Link>
         <span className="text-xs uppercase tracking-[0.3em] text-zinc-400 dark:text-zinc-500">
           Portfolio {portfolioId}
@@ -79,3 +84,4 @@ export default async function PortfolioPage({ params, searchParams }: PortfolioP
     </main>
   );
 }
+

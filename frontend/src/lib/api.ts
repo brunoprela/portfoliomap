@@ -17,6 +17,32 @@ export type PortfolioListResponse = {
     portfolios: Portfolio[];
 };
 
+export type PortfolioSetup = {
+    id: string;
+    name: string;
+    description?: string | null;
+    startDate: string;
+    endDate: string;
+    createdAt: string;
+    updatedAt: string;
+    portfolioIds: string[];
+};
+
+export type PortfolioSetupListResponse = {
+    setups: PortfolioSetup[];
+};
+
+export type PortfolioSetupPayload = {
+    name: string;
+    description?: string | null;
+    startDate?: string;
+    endDate?: string;
+};
+
+type PortfolioSetupResponse = {
+    setup: PortfolioSetup;
+};
+
 export type PortfolioPayload = {
     name: string;
     description?: string | null;
@@ -76,13 +102,123 @@ export type CombinedHistory = {
     history: PortfolioHistoryPoint[];
 };
 
-export async function fetchPortfolios(): Promise<PortfolioListResponse> {
-    const response = await fetch(`${API_BASE_URL}/api/portfolios`, {
+export async function fetchSetups(): Promise<PortfolioSetupListResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/setups`, {
         cache: "no-store",
     });
 
     if (!response.ok) {
-        throw new Error(`Failed to fetch portfolios: ${response.statusText}`);
+        throw new Error(`Failed to fetch portfolio setups: ${response.statusText}`);
+    }
+
+    const data = (await response.json()) as PortfolioSetupListResponse;
+    return data;
+}
+
+export async function fetchSetupSnapshot(setupId: string): Promise<CombinedSnapshot> {
+    const response = await fetch(`${API_BASE_URL}/api/setups/${setupId}/snapshot`, {
+        cache: "no-store",
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to fetch setup snapshot: ${errorText}`);
+    }
+
+    const data = (await response.json()) as CombinedSnapshot;
+    return data;
+}
+
+export async function fetchSetupHistory(setupId: string, startDate?: string): Promise<CombinedHistory> {
+    const url = new URL(`${API_BASE_URL}/api/setups/${setupId}/history`);
+    if (startDate) {
+        url.searchParams.set("startDate", startDate);
+    }
+
+    const response = await fetch(url.toString(), {
+        cache: "no-store",
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to fetch setup history: ${errorText}`);
+    }
+
+    const data = (await response.json()) as CombinedHistory;
+    return data;
+}
+
+export async function fetchSetup(setupId: string): Promise<PortfolioSetup> {
+    const response = await fetch(`${API_BASE_URL}/api/setups/${setupId}`, {
+        cache: "no-store",
+    });
+
+    if (response.status === 404) {
+        throw new Error("Setup not found");
+    }
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to fetch setup: ${errorText}`);
+    }
+
+    const data = (await response.json()) as PortfolioSetupResponse;
+    return data.setup;
+}
+
+export async function createSetup(payload: PortfolioSetupPayload): Promise<PortfolioSetup> {
+    const response = await fetch(`${API_BASE_URL}/api/setups`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to create setup: ${errorText}`);
+    }
+
+    const data = (await response.json()) as PortfolioSetupResponse;
+    return data.setup;
+}
+
+export async function updateSetup(
+    setupId: string,
+    payload: Partial<PortfolioSetupPayload>
+): Promise<PortfolioSetup> {
+    const response = await fetch(`${API_BASE_URL}/api/setups/${setupId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to update setup: ${errorText}`);
+    }
+
+    const data = (await response.json()) as PortfolioSetupResponse;
+    return data.setup;
+}
+
+export async function deleteSetup(setupId: string): Promise<void> {
+    const response = await fetch(`${API_BASE_URL}/api/setups/${setupId}`, {
+        method: "DELETE",
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to delete setup: ${errorText}`);
+    }
+}
+
+export async function fetchPortfolios(setupId: string): Promise<PortfolioListResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/setups/${setupId}/portfolios`, {
+        cache: "no-store",
+    });
+
+    if (!response.ok) {
+        throw new Error(`Failed to fetch portfolios for setup: ${response.statusText}`);
     }
 
     const data = (await response.json()) as PortfolioListResponse;
@@ -102,8 +238,8 @@ export async function fetchAlpacaStatus(): Promise<AlpacaStatus> {
     return data;
 }
 
-export async function createPortfolio(payload: PortfolioPayload): Promise<Portfolio> {
-    const response = await fetch(`${API_BASE_URL}/api/portfolios`, {
+export async function createPortfolio(setupId: string, payload: PortfolioPayload): Promise<Portfolio> {
+    const response = await fetch(`${API_BASE_URL}/api/setups/${setupId}/portfolios`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -119,10 +255,11 @@ export async function createPortfolio(payload: PortfolioPayload): Promise<Portfo
 }
 
 export async function updatePortfolio(
+    setupId: string,
     portfolioId: string,
     payload: Partial<PortfolioPayload>
 ): Promise<Portfolio> {
-    const response = await fetch(`${API_BASE_URL}/api/portfolios/${portfolioId}`, {
+    const response = await fetch(`${API_BASE_URL}/api/setups/${setupId}/portfolios/${portfolioId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -137,8 +274,8 @@ export async function updatePortfolio(
     return data.portfolio;
 }
 
-export async function deletePortfolio(portfolioId: string): Promise<void> {
-    const response = await fetch(`${API_BASE_URL}/api/portfolios/${portfolioId}`, {
+export async function deletePortfolio(setupId: string, portfolioId: string): Promise<void> {
+    const response = await fetch(`${API_BASE_URL}/api/setups/${setupId}/portfolios/${portfolioId}`, {
         method: "DELETE",
     });
 
@@ -148,8 +285,8 @@ export async function deletePortfolio(portfolioId: string): Promise<void> {
     }
 }
 
-export async function fetchPortfolio(id: string): Promise<Portfolio> {
-    const response = await fetch(`${API_BASE_URL}/api/portfolios/${id}`, {
+export async function fetchPortfolio(setupId: string, portfolioId: string): Promise<Portfolio> {
+    const response = await fetch(`${API_BASE_URL}/api/setups/${setupId}/portfolios/${portfolioId}`, {
         cache: "no-store",
     });
 
@@ -166,8 +303,8 @@ export async function fetchPortfolio(id: string): Promise<Portfolio> {
     return data.portfolio;
 }
 
-export async function fetchPortfolioSnapshot(id: string): Promise<PortfolioSnapshot> {
-    const response = await fetch(`${API_BASE_URL}/api/portfolios/${id}/snapshot`, {
+export async function fetchPortfolioSnapshot(setupId: string, portfolioId: string): Promise<PortfolioSnapshot> {
+    const response = await fetch(`${API_BASE_URL}/api/setups/${setupId}/portfolios/${portfolioId}/snapshot`, {
         cache: "no-store",
     });
 
@@ -180,10 +317,17 @@ export async function fetchPortfolioSnapshot(id: string): Promise<PortfolioSnaps
     return data;
 }
 
-export async function fetchPortfolioHistory(id: string, startDate: string): Promise<PortfolioHistory> {
-    const response = await fetch(`${API_BASE_URL}/api/portfolios/${id}/history?startDate=${encodeURIComponent(startDate)}`, {
+export async function fetchPortfolioHistory(
+    setupId: string,
+    portfolioId: string,
+    startDate: string
+): Promise<PortfolioHistory> {
+    const response = await fetch(
+        `${API_BASE_URL}/api/setups/${setupId}/portfolios/${portfolioId}/history?startDate=${encodeURIComponent(startDate)}`,
+        {
         cache: "no-store",
-    });
+        }
+    );
 
     if (!response.ok) {
         const errorText = await response.text();

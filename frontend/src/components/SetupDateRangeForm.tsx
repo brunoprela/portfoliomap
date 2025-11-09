@@ -1,29 +1,29 @@
 'use client';
 
-import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
+import { useState, useTransition } from 'react';
 
-import { updateCombinedEndDate, updateCombinedStartDate } from '@/lib/api';
+import { updateSetup } from '@/lib/api';
 
-type CombinedDateRangeFormProps = {
+type SetupDateRangeFormProps = {
+    setupId: string;
     initialStartDate: string | null;
     initialEndDate: string | null;
 };
 
-function normalizeInput(value: string | null | undefined, fallback: string) {
+function normalizeDate(value: string | null | undefined, fallback: string): string {
     if (!value) {
         return fallback;
     }
     return value.slice(0, 10);
 }
 
-export function CombinedDateRangeForm({ initialStartDate, initialEndDate }: CombinedDateRangeFormProps) {
+export function SetupDateRangeForm({ setupId, initialStartDate, initialEndDate }: SetupDateRangeFormProps) {
+    const today = new Date().toISOString().slice(0, 10);
     const router = useRouter();
     const [isPending, startTransition] = useTransition();
-    const today = new Date().toISOString().slice(0, 10);
-
-    const [startValue, setStartValue] = useState(() => normalizeInput(initialStartDate, today));
-    const [endValue, setEndValue] = useState(() => normalizeInput(initialEndDate, today));
+    const [startValue, setStartValue] = useState(() => normalizeDate(initialStartDate, today));
+    const [endValue, setEndValue] = useState(() => normalizeDate(initialEndDate, today));
     const [error, setError] = useState<string | null>(null);
 
     const handleSubmit = (event: React.FormEvent) => {
@@ -33,13 +33,13 @@ export function CombinedDateRangeForm({ initialStartDate, initialEndDate }: Comb
             return;
         }
 
-        const startDateObj = new Date(`${startValue}T00:00:00Z`);
-        const endDateObj = new Date(`${endValue}T23:59:59Z`);
-        if (Number.isNaN(startDateObj.getTime()) || Number.isNaN(endDateObj.getTime())) {
+        const startDate = new Date(`${startValue}T00:00:00Z`);
+        const endDate = new Date(`${endValue}T23:59:59Z`);
+        if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
             setError('Please choose valid dates.');
             return;
         }
-        if (startDateObj > endDateObj) {
+        if (startDate > endDate) {
             setError('Start date must be on or before the end date.');
             return;
         }
@@ -47,16 +47,14 @@ export function CombinedDateRangeForm({ initialStartDate, initialEndDate }: Comb
         setError(null);
         startTransition(async () => {
             try {
-                if (initialStartDate?.slice(0, 10) !== startValue) {
-                    await updateCombinedStartDate(`${startValue}T00:00:00Z`);
-                }
-                if (initialEndDate?.slice(0, 10) !== endValue) {
-                    await updateCombinedEndDate(`${endValue}T23:59:59Z`);
-                }
+                await updateSetup(setupId, {
+                    startDate: `${startValue}T00:00:00Z`,
+                    endDate: `${endValue}T23:59:59Z`,
+                });
                 router.refresh();
             } catch (cause) {
                 const message =
-                    cause instanceof Error ? cause.message : 'Failed to update date range.';
+                    cause instanceof Error ? cause.message : 'Failed to update setup date range.';
                 setError(message);
             }
         });
@@ -67,7 +65,7 @@ export function CombinedDateRangeForm({ initialStartDate, initialEndDate }: Comb
             <form onSubmit={handleSubmit} className="flex flex-col gap-4 sm:flex-row sm:items-end">
                 <div className="flex flex-col gap-2">
                     <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                        Global Start Date
+                        Start Date
                     </label>
                     <input
                         type="date"
@@ -79,7 +77,7 @@ export function CombinedDateRangeForm({ initialStartDate, initialEndDate }: Comb
                 </div>
                 <div className="flex flex-col gap-2">
                     <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                        Global End Date
+                        End Date
                     </label>
                     <input
                         type="date"
