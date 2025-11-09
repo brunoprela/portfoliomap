@@ -36,16 +36,20 @@ class PortfolioStore:
         "updated_at",
     )
     _SYMBOL_COLUMNS: Tuple[str, ...] = ("portfolio_id", "symbol", "weight")
+    _STATE_COLUMNS: Tuple[str, ...] = ("global_start_date", "global_end_date", "updated_at")
 
     def __init__(self, storage_root: Path) -> None:
         self._root = storage_root if storage_root.suffix == "" else storage_root.parent
         self._root.mkdir(parents=True, exist_ok=True)
         self._portfolios_path = self._root / "portfolios"
         self._symbols_path = self._root / "portfolio_symbols"
+        self._state_path = self._root / "portfolio_state"
 
         self._lock = Lock()
         self._portfolios: Dict[str, Portfolio] = {}
         self._portfolio_symbols: Dict[str, Dict[str, float]] = {}
+        self._global_start_date: Optional[datetime] = None
+        self._global_end_date: Optional[datetime] = None
 
         self._load()
 
@@ -76,6 +80,7 @@ class PortfolioStore:
         with self._lock:
             portfolio_df = self._read_table(self._portfolios_path, self._PORTFOLIO_COLUMNS)
             symbols_df = self._read_table(self._symbols_path, self._SYMBOL_COLUMNS)
+            state_df = self._read_table(self._state_path, self._STATE_COLUMNS)
 
             symbol_map: Dict[str, Dict[str, float]] = {}
             for record in symbols_df.to_dict("records"):
@@ -109,6 +114,28 @@ class PortfolioStore:
 
             self._portfolio_symbols = symbol_map
 
+            if not state_df.empty:
+                raw_start = state_df.iloc[-1].get("global_start_date")
+                self._global_start_date = self._parse_timestamp(str(raw_start) if raw_start else None)
+                raw_end = state_df.iloc[-1].get("global_end_date")
+                self._global_end_date = self._parse_timestamp(str(raw_end) if raw_end else None)
+            else:
+                self._global_start_date = None
+                self._global_end_date = None
+
+            if self._global_start_date is None and self._portfolios:
+                earliest = min(portfolio.start_date for portfolio in self._portfolios.values())
+                self._global_start_date = earliest
+
+            if (
+                self._global_start_date is not None
+                and self._global_end_date is not None
+                and self._global_end_date < self._global_start_date
+            ):
+                self._global_end_date = self._global_start_date
+
+            self._enforce_global_start_date()
+
     @staticmethod
     def _parse_timestamp(value: Optional[str]) -> Optional[datetime]:
         if not value:
@@ -119,11 +146,14 @@ class PortfolioStore:
             return None
 
     def _save(self) -> None:
+        self._enforce_global_start_date()
         portfolios_frame = self._build_portfolios_frame()
         symbols_frame = self._build_symbols_frame()
+        state_frame = self._build_state_frame()
 
         self._write_table(self._portfolios_path, portfolios_frame)
         self._write_table(self._symbols_path, symbols_frame)
+        self._write_table(self._state_path, state_frame)
 
     def _build_portfolios_frame(self) -> pd.DataFrame:
         records = []
@@ -159,6 +189,21 @@ class PortfolioStore:
         if frame.empty:
             return pd.DataFrame(columns=pd.Index(self._SYMBOL_COLUMNS))
         return frame.loc[:, list(self._SYMBOL_COLUMNS)]
+
+    def _build_state_frame(self) -> pd.DataFrame:
+        records = [
+            {
+                "global_start_date": self._global_start_date.isoformat()
+                if self._global_start_date is not None
+                else "",
+                "global_end_date": self._global_end_date.isoformat()
+                if self._global_end_date is not None
+                else "",
+                "updated_at": _timestamp().isoformat(),
+            }
+        ]
+        frame = pd.DataFrame.from_records(records)
+        return frame.loc[:, list(self._STATE_COLUMNS)]
 
     def _normalize_allocations(
         self,
@@ -235,12 +280,12 @@ class PortfolioStore:
             now = _timestamp()
             pid = str(uuid4())
             symbols = _normalize_symbols(payload.symbols)
-
-            start_date = payload.start_date or now
-            if start_date.tzinfo is None:
-                start_date = start_date.replace(tzinfo=timezone.utc)
-            else:
-                start_date = start_date.astimezone(timezone.utc)
+            normalized_start = self._normalize_start_date(payload.start_date)
+            if self._global_end_date is not None and normalized_start > self._global_end_date:
+                raise ValueError("Portfolio start date cannot be after the global end date")
+            if payload.start_date is not None or self._global_start_date is None:
+                self._global_start_date = normalized_start
+            start_date = self._global_start_date or normalized_start
 
             allocations_map = self._normalize_allocations(symbols, payload.allocations)
 
@@ -259,7 +304,8 @@ class PortfolioStore:
             self._portfolios[pid] = portfolio
             self._portfolio_symbols[pid] = allocations_map
             self._save()
-            return PortfolioResponse(portfolio=portfolio)
+            portfolio_synced = self._portfolios[pid]
+            return PortfolioResponse(portfolio=portfolio_synced)
 
     def update_portfolio(self, portfolio_id: str, payload: PortfolioUpdate) -> PortfolioResponse:
         with self._lock:
@@ -299,17 +345,16 @@ class PortfolioStore:
                 updated.allocation_percent = allocation
 
             if payload.start_date is not None:
-                start_date = payload.start_date
-                if start_date.tzinfo is None:
-                    start_date = start_date.replace(tzinfo=timezone.utc)
-                else:
-                    start_date = start_date.astimezone(timezone.utc)
-                updated.start_date = start_date
+                normalized_start = self._normalize_start_date(payload.start_date)
+                if self._global_end_date is not None and normalized_start > self._global_end_date:
+                    raise ValueError("Global start date cannot be after the global end date")
+                self._global_start_date = normalized_start
+                updated.start_date = normalized_start
 
             updated.updated_at = _timestamp()
             self._portfolios[portfolio_id] = updated
             self._save()
-            return PortfolioResponse(portfolio=updated)
+            return PortfolioResponse(portfolio=self._portfolios[portfolio_id])
 
     def delete_portfolio(self, portfolio_id: str) -> None:
         with self._lock:
@@ -318,6 +363,12 @@ class PortfolioStore:
 
             del self._portfolios[portfolio_id]
             self._portfolio_symbols.pop(portfolio_id, None)
+            if not self._portfolios:
+                self._global_start_date = None
+            else:
+                self._global_start_date = min(
+                    portfolio.start_date for portfolio in self._portfolios.values()
+                )
             self._save()
 
     def symbol_weights(self, portfolio_id: str) -> Dict[str, float]:
@@ -345,3 +396,78 @@ class PortfolioStore:
             for weights in self._portfolio_symbols.values():
                 symbols.update(weights.keys())
             return sorted(symbols)
+
+    def portfolio_count(self) -> int:
+        with self._lock:
+            return len(self._portfolios)
+
+    def total_allocation_percent(self) -> float:
+        with self._lock:
+            return sum(portfolio.allocation_percent for portfolio in self._portfolios.values())
+
+    def combined_symbol_allocations(self) -> Dict[str, float]:
+        with self._lock:
+            combined: Dict[str, float] = {}
+            for portfolio_id, portfolio in self._portfolios.items():
+                allocation = portfolio.allocation_percent
+                if allocation <= 0:
+                    continue
+                weights = self._portfolio_symbols.get(portfolio_id)
+                symbols = portfolio.symbols
+                if not symbols:
+                    continue
+                if not weights:
+                    equal_weight = round(1.0 / len(symbols), 6)
+                    weights = {symbol: equal_weight for symbol in symbols}
+                for symbol, weight in weights.items():
+                    combined[symbol] = combined.get(symbol, 0.0) + allocation * weight
+            return combined
+
+    def combined_start_date(self) -> Optional[datetime]:
+        with self._lock:
+            return self._global_start_date
+
+    def combined_end_date(self) -> Optional[datetime]:
+        with self._lock:
+            return self._global_end_date
+
+    def _normalize_start_date(self, value: Optional[datetime]) -> datetime:
+        start_date = value or _timestamp()
+        if start_date.tzinfo is None:
+            start_date = start_date.replace(tzinfo=timezone.utc)
+        else:
+            start_date = start_date.astimezone(timezone.utc)
+        return start_date
+
+    def _enforce_global_start_date(self) -> None:
+        if self._global_start_date is None:
+            return
+        for portfolio_id, portfolio in self._portfolios.items():
+            if portfolio.start_date != self._global_start_date:
+                updated = portfolio.model_copy()
+                updated.start_date = self._global_start_date
+                updated.updated_at = _timestamp()
+                self._portfolios[portfolio_id] = updated
+
+    def set_global_start_date(self, start_date: datetime) -> datetime:
+        with self._lock:
+            normalized = self._normalize_start_date(start_date)
+            if self._global_end_date is not None and normalized > self._global_end_date:
+                raise ValueError("Global start date cannot be after the global end date")
+            self._global_start_date = normalized
+            for portfolio_id, portfolio in self._portfolios.items():
+                updated = portfolio.model_copy()
+                updated.start_date = normalized
+                updated.updated_at = _timestamp()
+                self._portfolios[portfolio_id] = updated
+            self._save()
+            return self._global_start_date
+
+    def set_global_end_date(self, end_date: datetime) -> datetime:
+        with self._lock:
+            normalized = self._normalize_start_date(end_date)
+            if self._global_start_date is not None and normalized < self._global_start_date:
+                raise ValueError("Global end date cannot be before the global start date")
+            self._global_end_date = normalized
+            self._save()
+            return self._global_end_date

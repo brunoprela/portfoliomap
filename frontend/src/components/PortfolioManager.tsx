@@ -1,14 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 
-import type {
-    AlpacaStatus,
-    Portfolio,
-    PortfolioListResponse,
-    PortfolioPayload,
-} from '@/lib/api';
+import type { Portfolio, PortfolioListResponse, PortfolioPayload } from '@/lib/api';
 import { createPortfolio, deletePortfolio, updatePortfolio } from '@/lib/api';
 
 function formatPercent(value: number): string {
@@ -22,14 +17,11 @@ function parseSymbols(input: string): string[] {
         .filter(Boolean);
 }
 
-const todayISO = new Date().toISOString().slice(0, 10);
-
 type PortfolioFormState = {
     name: string;
     description: string;
     symbols: string;
     allocationPercent: string;
-    startDate: string;
     allocations: Record<string, string>;
 };
 
@@ -38,7 +30,6 @@ const defaultFormState: PortfolioFormState = {
     description: '',
     symbols: '',
     allocationPercent: '10',
-    startDate: todayISO,
     allocations: {},
 };
 
@@ -60,72 +51,29 @@ function portfolioToForm(portfolio: Portfolio): PortfolioFormState {
         const percent = weight * 100;
         allocations[symbol] = percent.toFixed(2);
     });
-    const startDate = (portfolio.startDate ?? portfolio.createdAt).slice(0, 10);
     return {
         name: portfolio.name,
         description: portfolio.description ?? '',
         symbols: symbols.join(', '),
         allocationPercent: (portfolio.allocationPercent * 100).toString(),
-        startDate,
         allocations,
     };
 }
 
 type PortfolioManagerProps = {
     initialPortfolios: PortfolioListResponse;
-    initialStatus: AlpacaStatus;
 };
 
-export function PortfolioManager({
-    initialPortfolios,
-    initialStatus,
-}: PortfolioManagerProps) {
+export function PortfolioManager({ initialPortfolios }: PortfolioManagerProps) {
     const [portfolios, setPortfolios] = useState<Portfolio[]>(
         initialPortfolios.portfolios,
     );
-    const [status, setStatus] = useState<AlpacaStatus>(initialStatus);
     const [formState, setFormState] = useState<PortfolioFormState>(
         defaultFormState,
     );
     const [editingId, setEditingId] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [submitting, setSubmitting] = useState(false);
-
-    const totalAllocation = useMemo(
-        () => portfolios.reduce((sum, portfolio) => sum + (portfolio.allocationPercent ?? 0), 0),
-        [portfolios],
-    );
-
-    const streamingSymbols = useMemo(() => {
-        const set = new Set<string>();
-        portfolios.forEach((portfolio) => {
-            portfolio.symbols.forEach((symbol) => set.add(symbol));
-        });
-        return Array.from(set).sort();
-    }, [portfolios]);
-
-    const portfolioCount = portfolios.length;
-
-    useEffect(() => {
-        setStatus((current) => {
-            const currentSymbols = current.symbols ?? [];
-            const sameSymbols =
-                currentSymbols.length === streamingSymbols.length &&
-                currentSymbols.every((symbol, index) => symbol === streamingSymbols[index]);
-            const sameTotal =
-                Math.abs((current.totalAllocationPercent ?? 0) - totalAllocation) < 1e-9;
-            const sameCount = current.portfolioCount === portfolioCount;
-            if (sameSymbols && sameTotal && sameCount) {
-                return current;
-            }
-            return {
-                ...current,
-                symbols: streamingSymbols,
-                totalAllocationPercent: totalAllocation,
-                portfolioCount,
-            };
-        });
-    }, [streamingSymbols, totalAllocation, portfolioCount]);
 
     const parsedSymbols = useMemo(
         () => parseSymbols(formState.symbols),
@@ -139,10 +87,8 @@ export function PortfolioManager({
     const allocationWarning = allocationSum <= 0 || allocationSum > 100.0001;
 
     const resetForm = () => {
-        const freshStartDate = new Date().toISOString().slice(0, 10);
         setFormState({
             ...defaultFormState,
-            startDate: freshStartDate,
             allocations: {},
         });
         setEditingId(null);
@@ -171,11 +117,6 @@ export function PortfolioManager({
                     allocations: nextAllocations,
                 };
             });
-            return;
-        }
-
-        if (field === 'startDate') {
-            setFormState((current) => ({ ...current, startDate: value }));
             return;
         }
 
@@ -223,16 +164,11 @@ export function PortfolioManager({
                 normalizedAllocations[symbol] = parseFloat(normalized.toFixed(6));
             });
 
-            const startDateIso = formState.startDate
-                ? new Date(`${formState.startDate}T00:00:00Z`).toISOString()
-                : undefined;
-
             const payload: PortfolioPayload = {
                 name: formState.name.trim(),
                 description: formState.description.trim() || undefined,
                 symbols,
                 allocation_percent: allocationPercent / 100,
-                start_date: startDateIso,
                 allocations: normalizedAllocations,
             };
 
@@ -302,32 +238,6 @@ export function PortfolioManager({
                     the same paper buying power, so pay attention to the combined
                     allocation across all of them.
                 </p>
-                <div className="flex flex-wrap gap-4 rounded-xl border border-zinc-200 bg-white p-4 text-sm dark:border-zinc-800 dark:bg-zinc-950">
-                    <div>
-                        <span className="text-zinc-500 dark:text-zinc-400">Feed Status:</span>{' '}
-                        <span className="font-medium text-zinc-900 dark:text-zinc-100">
-                            {status.feedEnabled ? 'Enabled' : 'Disabled'}
-                        </span>
-                    </div>
-                    <div>
-                        <span className="text-zinc-500 dark:text-zinc-400">Portfolios:</span>{' '}
-                        <span className="font-medium text-zinc-900 dark:text-zinc-100">
-                            {portfolioCount}
-                        </span>
-                    </div>
-                    <div>
-                        <span className="text-zinc-500 dark:text-zinc-400">Total Allocation:</span>{' '}
-                        <span className="font-medium text-zinc-900 dark:text-zinc-100">
-                            {formatPercent(totalAllocation)}
-                        </span>
-                    </div>
-                    <div>
-                        <span className="text-zinc-500 dark:text-zinc-400">Streaming Symbols:</span>{' '}
-                        <span className="font-medium text-zinc-900 dark:text-zinc-100">
-                            {streamingSymbols.length > 0 ? streamingSymbols.join(', ') : 'None'}
-                        </span>
-                    </div>
-                </div>
             </header>
 
             <form
@@ -351,17 +261,6 @@ export function PortfolioManager({
                             onChange={(event) => handleChange('name', event.target.value)}
                             placeholder="Growth Portfolio"
                             required
-                            disabled={submitting}
-                        />
-                    </label>
-                    <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                        Start Date
-                        <input
-                            type="date"
-                            className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-base text-zinc-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-                            value={formState.startDate}
-                            onChange={(event) => handleChange('startDate', event.target.value)}
-                            max={todayISO}
                             disabled={submitting}
                         />
                     </label>

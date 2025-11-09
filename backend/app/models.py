@@ -78,3 +78,38 @@ class PortfolioHistoryResponse(BaseModel):
     start_date: datetime = Field(serialization_alias="startDate")
     end_date: datetime = Field(serialization_alias="endDate")
     history: List[PortfolioHistoryPoint]
+
+
+class CombinedSnapshotResponse(BaseModel):
+    total_allocation_percent: float = Field(serialization_alias="totalAllocationPercent")
+    portfolio_count: int = Field(serialization_alias="portfolioCount")
+    earliest_start_date: Optional[datetime] = Field(default=None, serialization_alias="earliestStartDate")
+    latest_end_date: Optional[datetime] = Field(default=None, serialization_alias="latestEndDate")
+    symbol_allocations: Dict[str, float] = Field(default_factory=dict, serialization_alias="symbolAllocations")
+    quotes: List[TickerPrice] = Field(default_factory=list)
+
+
+class CombinedHistoryResponse(BaseModel):
+    start_date: datetime = Field(serialization_alias="startDate")
+    end_date: datetime = Field(serialization_alias="endDate")
+    history: List[PortfolioHistoryPoint]
+
+
+class GlobalStartDateUpdate(BaseModel):
+    start_date: datetime = Field(validation_alias="startDate", serialization_alias="startDate")
+
+    model_config = {
+        "populate_by_name": True,
+    }
+
+
+class GlobalStartDateResponse(BaseModel):
+    start_date: datetime = Field(serialization_alias="startDate")
+
+
+class GlobalEndDateUpdate(BaseModel):
+    end_date: datetime = Field(validation_alias="endDate", serialization_alias="endDate")
+
+    model_config = {
+        "populate_by_name": True,
+    }

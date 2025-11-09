@@ -1,19 +1,21 @@
-import Link from "next/link";
+import { CombinedPortfolioOverview } from "@/components/CombinedPortfolioOverview";
+import { CombinedPortfolioPerformance } from "@/components/CombinedPortfolioPerformance";
+import { CombinedDateRangeForm } from "@/components/CombinedDateRangeForm";
 import { PortfolioManager } from "@/components/PortfolioManager";
 import {
   fetchAlpacaStatus,
+  fetchCombinedHistory,
+  fetchCombinedSnapshot,
   fetchPortfolios,
-  fetchProjects,
 } from "@/lib/api";
 import type {
   AlpacaStatus,
+  CombinedHistory,
+  CombinedSnapshot,
   PortfolioListResponse,
-  Project,
 } from "@/lib/api";
 
 export default async function Home() {
-  let projects: Project[] = [];
-  let errorMessage: string | null = null;
   let portfolios: PortfolioListResponse = {
     portfolios: [],
   };
@@ -27,21 +29,33 @@ export default async function Home() {
     totalAllocationPercent: 0,
   };
 
-  try {
-    projects = await fetchProjects();
-  } catch (error) {
-    console.error("Failed to load projects", error);
-    errorMessage =
-      "We couldn’t reach the backend. Make sure the FastAPI server is running.";
-  }
+  let combinedSnapshot: CombinedSnapshot = {
+    totalAllocationPercent: 0,
+    portfolioCount: 0,
+    earliestStartDate: null,
+    latestEndDate: null,
+    symbolAllocations: {},
+    quotes: [],
+  };
+
+  let combinedHistory: CombinedHistory = {
+    startDate: new Date().toISOString(),
+    endDate: new Date().toISOString(),
+    history: [],
+  };
 
   try {
-    const [portfolioResponse, statusResponse] = await Promise.all([
-      fetchPortfolios(),
-      fetchAlpacaStatus(),
-    ]);
+    const [portfolioResponse, statusResponse, snapshotResponse, historyResponse] =
+      await Promise.all([
+        fetchPortfolios(),
+        fetchAlpacaStatus(),
+        fetchCombinedSnapshot(),
+        fetchCombinedHistory(),
+      ]);
     portfolios = portfolioResponse;
     status = statusResponse;
+    combinedSnapshot = snapshotResponse;
+    combinedHistory = historyResponse;
   } catch (error) {
     console.error("Failed to load portfolio metadata", error);
   }
@@ -62,43 +76,20 @@ export default async function Home() {
         </p>
       </header>
 
-      <PortfolioManager initialPortfolios={portfolios} initialStatus={status} />
+      <CombinedPortfolioOverview snapshot={combinedSnapshot} status={status} />
 
-      <section className="flex flex-col gap-6">
-        <h2 className="text-2xl font-medium text-zinc-800 dark:text-zinc-100">
-          Featured Projects
-        </h2>
+      <CombinedDateRangeForm
+        initialStartDate={combinedSnapshot.earliestStartDate}
+        initialEndDate={combinedSnapshot.latestEndDate}
+      />
 
-        {errorMessage ? (
-          <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200">
-            {errorMessage}
-          </p>
-        ) : (
-          <ul className="grid gap-6 md:grid-cols-2">
-            {projects.map((project) => (
-              <li
-                key={project.id}
-                className="flex flex-col gap-3 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm transition hover:border-indigo-200 hover:shadow-md dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-indigo-500/40"
-              >
-                <div>
-                  <h3 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">
-                    {project.name}
-                  </h3>
-                  <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                    {project.description}
-                  </p>
-                </div>
-                <Link
-                  href={project.url}
-                  className="mt-auto text-sm font-medium text-indigo-600 transition hover:text-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-300"
-                >
-                  View project →
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      <CombinedPortfolioPerformance
+        history={combinedHistory}
+        selectedStartDate={combinedSnapshot.earliestStartDate}
+        selectedEndDate={combinedSnapshot.latestEndDate}
+      />
+
+      <PortfolioManager initialPortfolios={portfolios} />
     </main>
   );
 }

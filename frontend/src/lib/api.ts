@@ -1,13 +1,6 @@
 const API_BASE_URL =
     process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
-export type Project = {
-    id: string;
-    name: string;
-    description: string;
-    url: string;
-};
-
 export type Portfolio = {
     id: string;
     name: string;
@@ -29,7 +22,6 @@ export type PortfolioPayload = {
     description?: string | null;
     symbols: string[];
     allocation_percent: number;
-    start_date?: string;
     allocations?: Record<string, number>;
 };
 
@@ -69,18 +61,20 @@ export type AlpacaStatus = {
     totalAllocationPercent: number;
 };
 
-export async function fetchProjects(): Promise<Project[]> {
-    const response = await fetch(`${API_BASE_URL}/api/projects`, {
-        next: { revalidate: 60 },
-    });
+export type CombinedSnapshot = {
+    totalAllocationPercent: number;
+    portfolioCount: number;
+    earliestStartDate: string | null;
+    latestEndDate: string | null;
+    symbolAllocations: Record<string, number>;
+    quotes: TickerQuote[];
+};
 
-    if (!response.ok) {
-        throw new Error(`Failed to fetch projects: ${response.statusText}`);
-    }
-
-    const data: { projects: Project[] } = await response.json();
-    return data.projects;
-}
+export type CombinedHistory = {
+    startDate: string;
+    endDate: string;
+    history: PortfolioHistoryPoint[];
+};
 
 export async function fetchPortfolios(): Promise<PortfolioListResponse> {
     const response = await fetch(`${API_BASE_URL}/api/portfolios`, {
@@ -197,5 +191,70 @@ export async function fetchPortfolioHistory(id: string, startDate: string): Prom
     }
 
     const data = (await response.json()) as PortfolioHistory;
+    return data;
+}
+
+export async function fetchCombinedSnapshot(): Promise<CombinedSnapshot> {
+    const response = await fetch(`${API_BASE_URL}/api/portfolios/combined/snapshot`, {
+        cache: "no-store",
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to fetch combined snapshot: ${errorText}`);
+    }
+
+    const data = (await response.json()) as CombinedSnapshot;
+    return data;
+}
+
+export async function fetchCombinedHistory(startDate?: string): Promise<CombinedHistory> {
+    const url = new URL(`${API_BASE_URL}/api/portfolios/combined/history`);
+    if (startDate) {
+        url.searchParams.set("startDate", startDate);
+    }
+
+    const response = await fetch(url.toString(), {
+        cache: "no-store",
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to fetch combined history: ${errorText}`);
+    }
+
+    const data = (await response.json()) as CombinedHistory;
+    return data;
+}
+
+export async function updateCombinedStartDate(startDate: string): Promise<CombinedSnapshot> {
+    const response = await fetch(`${API_BASE_URL}/api/portfolios/combined/start-date`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ startDate }),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to update combined start date: ${errorText}`);
+    }
+
+    const data = (await response.json()) as CombinedSnapshot;
+    return data;
+}
+
+export async function updateCombinedEndDate(endDate: string): Promise<CombinedSnapshot> {
+    const response = await fetch(`${API_BASE_URL}/api/portfolios/combined/end-date`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ endDate }),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to update combined end date: ${errorText}`);
+    }
+
+    const data = (await response.json()) as CombinedSnapshot;
     return data;
 }

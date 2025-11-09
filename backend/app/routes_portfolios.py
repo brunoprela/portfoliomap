@@ -8,6 +8,11 @@ import requests
 from fastapi import APIRouter, HTTPException, Query, Request, status
 
 from .models import (
+    CombinedHistoryResponse,
+    CombinedSnapshotResponse,
+    GlobalEndDateUpdate,
+    GlobalStartDateResponse,
+    GlobalStartDateUpdate,
     PortfolioCreate,
     PortfolioListResponse,
     PortfolioResponse,
@@ -210,6 +215,100 @@ def _build_portfolio_history(
         )
 
     return history
+
+
+@router.get("/combined/snapshot", response_model=CombinedSnapshotResponse)
+async def combined_snapshot(request: Request) -> CombinedSnapshotResponse:
+    store = _store(request)
+    symbol_allocations = store.combined_symbol_allocations()
+    symbols = sorted(symbol_allocations.keys())
+    settings = _settings(request)
+
+    quotes_map = _fetch_latest_trades(settings, symbols) if symbols else {}
+    quotes: List[TickerPrice] = []
+    for symbol in symbols:
+        base_quote = quotes_map.get(symbol)
+        weight = symbol_allocations.get(symbol)
+        if base_quote is not None:
+            quote = base_quote.model_copy(update={"weight": weight})
+        else:
+            quote = TickerPrice(symbol=symbol, weight=weight)
+        quotes.append(quote)
+
+    return CombinedSnapshotResponse(
+        total_allocation_percent=store.total_allocation_percent(),
+        portfolio_count=store.portfolio_count(),
+        earliest_start_date=store.combined_start_date(),
+        latest_end_date=store.combined_end_date(),
+        symbol_allocations=symbol_allocations,
+        quotes=quotes,
+    )
+
+
+@router.get("/combined/history", response_model=CombinedHistoryResponse)
+async def combined_history(
+    request: Request,
+    start_date: date | None = Query(default=None, alias="startDate"),
+) -> CombinedHistoryResponse:
+    store = _store(request)
+    symbol_allocations = store.combined_symbol_allocations()
+    symbols = sorted(symbol_allocations.keys())
+
+    today = datetime.now(tz=timezone.utc).date()
+    earliest_start = store.combined_start_date()
+    earliest_date = earliest_start.date() if earliest_start is not None else today
+
+    if start_date is None or start_date < earliest_date:
+        start_date_obj = earliest_date
+    else:
+        start_date_obj = start_date
+
+    combined_start_dt = store.combined_start_date()
+    combined_start = combined_start_dt.date() if combined_start_dt else None
+    combined_end_dt = store.combined_end_date()
+    combined_end = combined_end_dt.date() if combined_end_dt else None
+    effective_end = combined_end if combined_end is not None else today
+    if start_date_obj > effective_end:
+        start_date_obj = effective_end
+
+    settings = _settings(request)
+    bars = _fetch_historical_bars(settings, symbols, start_date_obj, effective_end) if symbols else {}
+    history_points = _build_portfolio_history(symbols, symbol_allocations, bars) if symbols else []
+
+    if history_points:
+        history_start = history_points[0].date
+        history_end = history_points[-1].date
+    else:
+        history_start = datetime.combine(start_date_obj, datetime.min.time(), tzinfo=timezone.utc)
+        history_end = datetime.combine(effective_end, datetime.min.time(), tzinfo=timezone.utc)
+
+    return CombinedHistoryResponse(
+        start_date=history_start,
+        end_date=history_end,
+        history=history_points,
+    )
+
+
+@router.post("/combined/start-date", response_model=CombinedSnapshotResponse)
+async def update_combined_start_date(request: Request, payload: GlobalStartDateUpdate) -> CombinedSnapshotResponse:
+    store = _store(request)
+    try:
+        store.set_global_start_date(payload.start_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return await combined_snapshot(request)
+
+
+@router.post("/combined/end-date", response_model=CombinedSnapshotResponse)
+async def update_combined_end_date(request: Request, payload: GlobalEndDateUpdate) -> CombinedSnapshotResponse:
+    store = _store(request)
+    try:
+        store.set_global_end_date(payload.end_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return await combined_snapshot(request)
+
+
 @router.get("", response_model=PortfolioListResponse)
 async def list_portfolios(request: Request) -> PortfolioListResponse:
     store = _store(request)
@@ -268,14 +367,30 @@ async def portfolio_history(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     today = datetime.now(tz=timezone.utc).date()
+    combined_start_dt = store.combined_start_date()
+    combined_start = combined_start_dt.date() if combined_start_dt else None
+    combined_end_dt = store.combined_end_date()
+    combined_end = combined_end_dt.date() if combined_end_dt else None
     portfolio_start = (portfolio.start_date or portfolio.created_at).date()
+
     if start_date is None:
-        start_date_obj = portfolio_start
+        if combined_start is not None:
+            start_date_obj = combined_start
+        else:
+            start_date_obj = portfolio_start
     else:
         start_date_obj = start_date
+
+    if combined_start is not None and start_date_obj < combined_start:
+        start_date_obj = combined_start
+
+    effective_end = combined_end if combined_end is not None else today
+    if start_date_obj > effective_end:
+        start_date_obj = effective_end
+
     settings = _settings(request)
 
-    bars = _fetch_historical_bars(settings, portfolio.symbols, start_date_obj, today)
+    bars = _fetch_historical_bars(settings, portfolio.symbols, start_date_obj, effective_end)
     history_points = _build_portfolio_history(portfolio.symbols, weights, bars)
 
     if history_points:
@@ -283,7 +398,7 @@ async def portfolio_history(
         history_end = history_points[-1].date
     else:
         history_start = datetime.combine(start_date_obj, datetime.min.time(), tzinfo=timezone.utc)
-        history_end = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
+        history_end = datetime.combine(effective_end, datetime.min.time(), tzinfo=timezone.utc)
 
     return PortfolioHistoryResponse(
         portfolio=portfolio,
