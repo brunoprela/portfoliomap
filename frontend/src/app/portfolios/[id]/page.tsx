@@ -62,7 +62,7 @@ export default async function PortfolioPage({ params, searchParams }: PortfolioP
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-10 bg-white px-6 py-16 text-zinc-900 dark:bg-black dark:text-zinc-100 sm:px-10 lg:px-14">
+    <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-14 bg-white px-6 py-16 text-zinc-900 dark:bg-black dark:text-zinc-100 sm:px-12 lg:px-28">
       <nav className="flex items-center justify-between text-sm text-zinc-500 dark:text-zinc-400">
         <Link
           href="/"

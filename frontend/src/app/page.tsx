@@ -61,7 +61,7 @@ export default async function Home() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-4xl flex-col gap-12 bg-white px-6 py-20 font-sans text-gray-900 dark:bg-black dark:text-zinc-100 sm:px-12 lg:px-24">
+    <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-16 bg-white px-6 py-20 font-sans text-gray-900 dark:bg-black dark:text-zinc-100 sm:px-12 lg:px-28">
       <header className="flex flex-col gap-4">
         <p className="text-sm uppercase tracking-[0.35em] text-indigo-500 dark:text-indigo-400">
           Portfolio Map

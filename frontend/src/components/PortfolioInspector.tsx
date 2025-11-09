@@ -1,15 +1,13 @@
 'use client';
-
 import { useMemo, useState } from 'react';
+
 
 import type {
   Portfolio,
   PortfolioHistory,
-  PortfolioHistoryPoint,
   PortfolioSnapshot,
   TickerQuote,
 } from '@/lib/api';
-import { fetchPortfolioHistory } from '@/lib/api';
 
 const currencyFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -42,53 +40,232 @@ function formatPercent(value: number | null | undefined): string {
   return `${Math.round(value * 100)}%`;
 }
 
-type PortfolioPerformanceChartProps = {
-  history: PortfolioHistoryPoint[];
+function formatDateUTC(value: string): string {
+  try {
+    return new Date(value).toLocaleDateString(undefined, { timeZone: 'UTC' });
+  } catch {
+    return value;
+  }
+}
+
+type InteractivePortfolioChartProps = {
+  history: PortfolioHistory;
 };
 
-function PortfolioPerformanceChart({ history }: PortfolioPerformanceChartProps) {
-  if (history.length < 2) {
-    return (
-      <p className="text-sm text-zinc-500 dark:text-zinc-400">
-        Not enough historical data to render a performance chart.
-      </p>
-    );
-  }
-
-  const values = history.map((point) => point.value);
+function InteractivePortfolioChart({ history }: InteractivePortfolioChartProps) {
+  const points = history.history;
+  const values = points.map((point) => point.value);
   const minValue = Math.min(...values);
   const maxValue = Math.max(...values);
   const range = maxValue - minValue || 1;
 
-  const points = history
-    .map((point, index) => {
-      const x = (index / (history.length - 1)) * 100;
-      const y = 100 - ((point.value - minValue) / range) * 100;
-      return `${x},${y}`;
-    })
-    .join(' ');
+  const svgWidth = 720;
+  const svgHeight = 320;
+  const margin = { top: 20, right: 28, bottom: 36, left: 52 };
+  const chartWidth = svgWidth - margin.left - margin.right;
+  const chartHeight = svgHeight - margin.top - margin.bottom;
+
+  const coordinates = useMemo(
+    () =>
+      points.length === 0
+        ? []
+        : points.map((point, index) => {
+          const denominator = Math.max(points.length - 1, 1);
+          const x = margin.left + (index / denominator) * chartWidth;
+          const y =
+            margin.top +
+            chartHeight -
+            ((point.value - minValue) / range) * chartHeight;
+          return { x, y, point };
+        }),
+    [chartHeight, chartWidth, points, margin.left, margin.top, minValue, range],
+  );
+
+  const pathD = coordinates.length
+    ? coordinates.map((coord, index) => `${index === 0 ? 'M' : 'L'} ${coord.x} ${coord.y}`).join(' ')
+    : '';
+  const areaD = coordinates.length
+    ? `${pathD} L ${margin.left + chartWidth} ${margin.top + chartHeight} L ${margin.left} ${margin.top + chartHeight} Z`
+    : '';
+
+  const xTicks = useMemo(() => {
+    if (points.length === 0) {
+      return [];
+    }
+    const desiredTicks = Math.min(6, points.length);
+    const step = Math.max(1, Math.floor((points.length - 1) / (desiredTicks - 1 || 1)));
+    const ticks: { index: number; label: string; x: number }[] = [];
+    for (let i = 0; i < points.length; i += step) {
+      const coord = coordinates[i];
+      if (!coord) {
+        continue;
+      }
+      ticks.push({ index: i, label: formatDateUTC(points[i].date), x: coord.x });
+    }
+    const lastCoord = coordinates[coordinates.length - 1];
+    if (lastCoord && ticks[ticks.length - 1]?.index !== points.length - 1) {
+      const lastPoint = points[points.length - 1];
+      ticks.push({ index: points.length - 1, label: formatDateUTC(lastPoint.date), x: lastCoord.x });
+    }
+    return ticks;
+  }, [coordinates, points]);
+
+  const yTicks = useMemo(() => {
+    const divisions = 4;
+    const ticks: { value: number; y: number }[] = [];
+    for (let i = 0; i <= divisions; i += 1) {
+      const value = minValue + (range * i) / divisions;
+      const y = margin.top + chartHeight - ((value - minValue) / range) * chartHeight;
+      ticks.push({ value, y });
+    }
+    return ticks;
+  }, [chartHeight, margin.top, minValue, range]);
+
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const activePoint = hoverIndex != null ? coordinates[hoverIndex] : null;
+
+  const handlePointerMove = (event: React.MouseEvent<SVGSVGElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const svgX = ((event.clientX - rect.left) / rect.width) * svgWidth;
+    const relativeX = Math.min(Math.max(svgX - margin.left, 0), chartWidth);
+    const ratio = relativeX / chartWidth;
+    const index = Math.round(ratio * (coordinates.length - 1));
+    setHoverIndex(index);
+  };
+
+  const handlePointerLeave = () => setHoverIndex(null);
+
+  if (coordinates.length < 2) {
+    return (
+      <div className="flex h-full items-center justify-center p-4 text-sm text-zinc-500 dark:text-zinc-400">
+        Not enough historical data to render a performance chart.
+      </div>
+    );
+  }
 
   return (
-    <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-full w-full">
-      <defs>
-        <linearGradient id="portfolio-chart-fill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="rgba(79, 70, 229, 0.35)" />
-          <stop offset="100%" stopColor="rgba(129, 140, 248, 0.05)" />
-        </linearGradient>
-      </defs>
-      <polyline
-        points={points}
-        fill="none"
-        stroke="rgb(99, 102, 241)"
-        strokeWidth={2}
-        vectorEffect="non-scaling-stroke"
-      />
-      <polygon
-        points={`0,100 ${points} 100,100`}
-        fill="url(#portfolio-chart-fill)"
-        opacity={0.6}
-      />
-    </svg>
+    <div className="relative h-full">
+      <svg
+        width="100%"
+        height="320"
+        viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+        preserveAspectRatio="none"
+        onMouseMove={handlePointerMove}
+        onMouseLeave={handlePointerLeave}
+      >
+        <defs>
+          <linearGradient id="portfolio-chart-fill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="rgba(79, 70, 229, 0.25)" />
+            <stop offset="100%" stopColor="rgba(129, 140, 248, 0.05)" />
+          </linearGradient>
+        </defs>
+
+        <line
+          x1={margin.left}
+          y1={margin.top + chartHeight}
+          x2={margin.left + chartWidth}
+          y2={margin.top + chartHeight}
+          stroke="rgb(228, 228, 231)"
+          strokeWidth={1}
+        />
+        <line
+          x1={margin.left}
+          y1={margin.top}
+          x2={margin.left}
+          y2={margin.top + chartHeight}
+          stroke="rgb(228, 228, 231)"
+          strokeWidth={1}
+        />
+
+        {xTicks.map((tick) => (
+          <g key={`x-${tick.index}`}>
+            <line
+              x1={tick.x}
+              y1={margin.top + chartHeight}
+              x2={tick.x}
+              y2={margin.top + chartHeight + 6}
+              stroke="rgb(161, 161, 170)"
+              strokeWidth={1}
+            />
+            <text
+              x={tick.x}
+              y={margin.top + chartHeight + 24}
+              textAnchor="middle"
+              className="fill-zinc-500 text-[11px]"
+            >
+              {tick.label}
+            </text>
+          </g>
+        ))}
+
+        {yTicks.map((tick, index) => (
+          <g key={`y-${index}`}>
+            <line
+              x1={margin.left - 6}
+              y1={tick.y}
+              x2={margin.left + chartWidth}
+              y2={tick.y}
+              stroke="rgba(212, 212, 216, 0.4)"
+              strokeWidth={index === 0 ? 1.5 : 1}
+              strokeDasharray={index === 0 ? '0' : '4 6'}
+            />
+            <text
+              x={margin.left - 12}
+              y={tick.y + 4}
+              textAnchor="end"
+              className="fill-zinc-500 text-[11px]"
+            >
+              {(tick.value * 100).toFixed(0)}
+            </text>
+          </g>
+        ))}
+
+        <path d={areaD} fill="url(#portfolio-chart-fill)" opacity={0.7} />
+        <path
+          d={pathD}
+          fill="none"
+          stroke="rgb(79, 70, 229)"
+          strokeWidth={2}
+          strokeLinejoin="round"
+        />
+
+        {activePoint ? (
+          <g>
+            <line
+              x1={activePoint.x}
+              y1={margin.top}
+              x2={activePoint.x}
+              y2={margin.top + chartHeight}
+              stroke="rgba(79, 70, 229, 0.35)"
+              strokeWidth={1.5}
+              strokeDasharray="4 4"
+            />
+            <circle
+              cx={activePoint.x}
+              cy={activePoint.y}
+              r={4}
+              fill="rgb(79, 70, 229)"
+              stroke="#fff"
+              strokeWidth={1.5}
+            />
+          </g>
+        ) : null}
+      </svg>
+
+      {activePoint ? (
+        <div
+          className="pointer-events-none absolute top-4 -translate-x-1/2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+          style={{ left: `${(activePoint.x / svgWidth) * 100}%` }}
+        >
+          <p className="font-medium text-zinc-900 dark:text-zinc-100">
+            {formatDateUTC(activePoint.point.date)}
+          </p>
+          <p className="text-zinc-600 dark:text-zinc-300">
+            Index {(activePoint.point.value * 100).toFixed(2)}
+          </p>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -101,12 +278,7 @@ type PortfolioInspectorProps = {
 export function PortfolioInspector({ portfolio, snapshot, history }: PortfolioInspectorProps) {
   const initialSymbol = snapshot.quotes[0]?.symbol ?? portfolio.symbols[0] ?? '';
   const [selectedSymbol, setSelectedSymbol] = useState(initialSymbol);
-  const [historyState, setHistoryState] = useState<PortfolioHistory>(history);
-  const [historyError, setHistoryError] = useState<string | null>(null);
-  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
-  const [startDate, setStartDate] = useState(() => history.startDate.slice(0, 10));
-
-  const historyPoints = historyState.history;
+  const historyPoints = history.history;
 
   const allocationMap = useMemo(() => {
     const weights = snapshot.portfolio.allocations ?? portfolio.allocations ?? {};
@@ -142,27 +314,12 @@ export function PortfolioInspector({ portfolio, snapshot, history }: PortfolioIn
     return endValue / startValue - 1;
   }, [historyPoints]);
 
-  const handleStartDateChange = async (value: string) => {
-    setStartDate(value);
-    if (!value) {
-      return;
-    }
-    setIsLoadingHistory(true);
-    setHistoryError(null);
-    try {
-      const nextHistory = await fetchPortfolioHistory(portfolio.id, value);
-      setHistoryState(nextHistory);
-    } catch (error) {
-      setHistoryError(
-        error instanceof Error ? error.message : 'Failed to load historical performance.',
-      );
-    } finally {
-      setIsLoadingHistory(false);
-    }
-  };
-
-  const historyStartLabel = new Date(historyState.startDate).toLocaleDateString();
-  const historyEndLabel = new Date(historyState.endDate).toLocaleDateString();
+  const historyStartLabel = formatDateUTC(history.startDate);
+  const historyEndLabel = formatDateUTC(history.endDate);
+  const dataStartDate = historyPoints.length > 0 ? historyPoints[0].date : null;
+  const dataEndDate = historyPoints.length > 0 ? historyPoints[historyPoints.length - 1].date : null;
+  const dataGapAtStart = dataStartDate && new Date(dataStartDate) > new Date(history.startDate);
+  const dataGapAtEnd = dataEndDate && new Date(dataEndDate) < new Date(history.endDate);
 
   return (
     <div className="flex flex-col gap-8">
@@ -180,35 +337,50 @@ export function PortfolioInspector({ portfolio, snapshot, history }: PortfolioIn
               {portfolio.symbols.join(', ')}
             </p>
           </div>
-          <div className="flex flex-col items-end gap-2 text-sm text-zinc-500 dark:text-zinc-400">
-            <label className="flex flex-col items-end gap-1">
-              <span className="text-xs uppercase tracking-[0.2em]">Start Date</span>
-              <input
-                type="date"
-                value={startDate}
-                max={new Date().toISOString().slice(0, 10)}
-                onChange={(event) => handleStartDateChange(event.target.value)}
-                className="rounded-lg border border-zinc-300 bg-white px-3 py-1 text-sm text-zinc-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-              />
-            </label>
-            <span>
-              Current value:{' '}
-              <span className="font-medium text-zinc-900 dark:text-zinc-50">
-                {currencyFormatter.format(portfolioCurrentValue)}
-              </span>
-            </span>
-            <span>
-              Total return:{' '}
-              <span
-                className={
-                  totalReturn >= 0
-                    ? 'font-medium text-emerald-600 dark:text-emerald-400'
-                    : 'font-medium text-rose-600 dark:text-rose-400'
-                }
-              >
-                {Math.round(totalReturn * 100)}%
-              </span>
-            </span>
+          <div className="flex flex-col items-end gap-3 rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-500 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-left sm:grid-cols-4">
+              <div className="col-span-1">
+                <p className="text-xs uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">
+                  Global Start
+                </p>
+                <p className="font-medium text-zinc-900 dark:text-zinc-100">
+                  {formatDateUTC(history.startDate)}
+                </p>
+              </div>
+              <div className="col-span-1">
+                <p className="text-xs uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">
+                  Global End
+                </p>
+                <p className="font-medium text-zinc-900 dark:text-zinc-100">
+                  {formatDateUTC(history.endDate)}
+                </p>
+              </div>
+              <div className="col-span-1">
+                <p className="text-xs uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">
+                  Current Value
+                </p>
+                <p className="font-medium text-zinc-900 dark:text-zinc-100">
+                  {currencyFormatter.format(portfolioCurrentValue)}
+                </p>
+              </div>
+              <div className="col-span-1">
+                <p className="text-xs uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">
+                  Total Return
+                </p>
+                <p
+                  className={
+                    totalReturn >= 0
+                      ? 'font-medium text-emerald-600 dark:text-emerald-400'
+                      : 'font-medium text-rose-600 dark:text-rose-400'
+                  }
+                >
+                  {Math.round(totalReturn * 100)}%
+                </p>
+              </div>
+            </div>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Date range managed globally from the dashboard.
+            </p>
           </div>
         </header>
 
@@ -229,11 +401,10 @@ export function PortfolioInspector({ portfolio, snapshot, history }: PortfolioIn
                 key={symbol}
                 type="button"
                 onClick={() => setSelectedSymbol(symbol)}
-                className={`flex flex-col gap-2 rounded-2xl border px-4 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
-                  isActive
+                className={`flex flex-col gap-2 rounded-2xl border px-4 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive
                     ? 'border-indigo-300 bg-indigo-50 dark:border-indigo-500/50 dark:bg-indigo-500/10'
                     : 'border-zinc-200 bg-white hover:border-indigo-200 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-indigo-500/40'
-                }`}
+                  }`}
               >
                 <div className="flex items-center justify-between">
                   <span className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
@@ -266,16 +437,15 @@ export function PortfolioInspector({ portfolio, snapshot, history }: PortfolioIn
             </p>
           </div>
         </header>
-        <div className="h-[260px] w-full overflow-hidden rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-700 dark:bg-zinc-900">
-          {isLoadingHistory ? (
-            <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading history…</p>
-          ) : (
-            <PortfolioPerformanceChart history={historyPoints} />
-          )}
-        </div>
-        {historyError ? (
-          <p className="text-sm text-rose-600 dark:text-rose-400">{historyError}</p>
+        {(dataGapAtStart || dataGapAtEnd) ? (
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Data availability is currently {formatDateUTC(dataStartDate ?? history.startDate)} –{' '}
+            {formatDateUTC(dataEndDate ?? history.endDate)}.
+          </p>
         ) : null}
+        <div className="h-[320px] w-full overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-900">
+          <InteractivePortfolioChart history={history} />
+        </div>
         {historyPoints.length > 0 ? (
           <div className="overflow-x-auto rounded-2xl border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-900">
             <table className="min-w-full divide-y divide-zinc-200 dark:divide-zinc-700">
@@ -293,7 +463,7 @@ export function PortfolioInspector({ portfolio, snapshot, history }: PortfolioIn
                 {historyPoints.slice(-10).map((point) => (
                   <tr key={point.date}>
                     <td className="px-4 py-2 text-sm text-zinc-600 dark:text-zinc-300">
-                      {new Date(point.date).toLocaleDateString()}
+                      {formatDateUTC(point.date)}
                     </td>
                     <td className="px-4 py-2 text-sm font-medium text-zinc-900 dark:text-zinc-100">
                       {(point.value * 100).toFixed(2)}
