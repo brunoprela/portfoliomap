@@ -99,15 +99,15 @@ class PortfolioSetup(BaseModel):
 class PortfolioSetupCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=160)
     description: Optional[str] = Field(default=None, max_length=500)
-    start_date: Optional[datetime] = Field(default=None, serialization_alias="startDate")
-    end_date: Optional[datetime] = Field(default=None, serialization_alias="endDate")
+    start_date: Optional[datetime] = Field(default=None, alias="startDate", serialization_alias="startDate")
+    end_date: Optional[datetime] = Field(default=None, alias="endDate", serialization_alias="endDate")
 
 
 class PortfolioSetupUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=160)
     description: Optional[str] = Field(default=None, max_length=500)
-    start_date: Optional[datetime] = Field(default=None, serialization_alias="startDate")
-    end_date: Optional[datetime] = Field(default=None, serialization_alias="endDate")
+    start_date: Optional[datetime] = Field(default=None, alias="startDate", serialization_alias="startDate")
+    end_date: Optional[datetime] = Field(default=None, alias="endDate", serialization_alias="endDate")
 
 
 class PortfolioSetupResponse(BaseModel):

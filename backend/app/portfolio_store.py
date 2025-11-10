@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 import pykx as kx
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Dict, List, Optional, Sequence, Tuple, cast
@@ -404,8 +404,11 @@ class PortfolioStore:
         with self._lock:
             now = _timestamp()
             sid = str(uuid4())
-            start_date = self._normalize_datetime(payload.start_date)
-            end_date = self._normalize_datetime(payload.end_date)
+            default_start = now - timedelta(days=365)
+            start_source = payload.start_date or default_start
+            end_source = payload.end_date or now
+            start_date = self._normalize_datetime(start_source)
+            end_date = self._normalize_datetime(end_source)
             if end_date < start_date:
                 end_date = start_date
             setup = PortfolioSetup(

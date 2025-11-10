@@ -5,13 +5,26 @@ import { useRouter } from 'next/navigation';
 
 import { createSetup } from '@/lib/api';
 
+function formatDateISO(date: Date): string {
+    const cloned = new Date(date.getTime());
+    cloned.setUTCHours(0, 0, 0, 0);
+    return cloned.toISOString().slice(0, 10);
+}
+
 export function SetupCreateForm() {
     const router = useRouter();
     const [isPending, startTransition] = useTransition();
     const [name, setName] = useState('');
     const [description, setDescription] = useState('');
-    const today = new Date().toISOString().slice(0, 10);
-    const [startDate, setStartDate] = useState(today);
+
+    const todayDate = new Date();
+    const defaultStartDate = new Date(todayDate.getTime());
+    defaultStartDate.setFullYear(defaultStartDate.getFullYear() - 1);
+
+    const today = formatDateISO(todayDate);
+    const initialStart = formatDateISO(defaultStartDate);
+
+    const [startDate, setStartDate] = useState(initialStart);
     const [endDate, setEndDate] = useState(today);
     const [error, setError] = useState<string | null>(null);
 

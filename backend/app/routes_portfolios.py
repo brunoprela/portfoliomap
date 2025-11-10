@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from typing import Dict, List
 
 import requests
@@ -326,6 +326,14 @@ async def setup_history(
     bars = _fetch_historical_bars(settings, symbols, start_date_obj, effective_end) if symbols else {}
     history_points = _build_portfolio_history(symbols, symbol_allocations, bars) if symbols else []
 
+    if not history_points and symbols and start_date_obj > setup_start:
+        fallback_start = max(setup_start, start_date_obj - timedelta(days=30))
+        if fallback_start < start_date_obj:
+            bars = _fetch_historical_bars(settings, symbols, fallback_start, effective_end)
+            history_points = _build_portfolio_history(symbols, symbol_allocations, bars)
+            if history_points:
+                start_date_obj = fallback_start
+
     if history_points:
         history_start = history_points[0].date
         history_end = history_points[-1].date
@@ -469,6 +477,14 @@ async def setup_portfolio_history(
     settings = _settings(request)
     bars = _fetch_historical_bars(settings, portfolio.symbols, requested_start, effective_end)
     history_points = _build_portfolio_history(portfolio.symbols, weights, bars)
+
+    if not history_points and requested_start > setup_start:
+        fallback_start = max(setup_start, requested_start - timedelta(days=30))
+        if fallback_start < requested_start:
+            bars = _fetch_historical_bars(settings, portfolio.symbols, fallback_start, effective_end)
+            history_points = _build_portfolio_history(portfolio.symbols, weights, bars)
+            if history_points:
+                requested_start = fallback_start
 
     if history_points:
         history_start = history_points[0].date

@@ -1,26 +1,12 @@
 import { SetupComparisonGrid } from "@/components/SetupComparisonGrid";
-import { SetupCreateForm } from "@/components/SetupCreateForm";
-import { fetchAlpacaStatus, fetchSetupHistory, fetchSetupSnapshot, fetchSetups } from "@/lib/api";
-import type { AlpacaStatus, CombinedHistory, CombinedSnapshot, PortfolioSetup, PortfolioSetupListResponse } from "@/lib/api";
+import { fetchSetupHistory, fetchSetupSnapshot, fetchSetups } from "@/lib/api";
+import type { CombinedHistory, CombinedSnapshot, PortfolioSetupListResponse } from "@/lib/api";
 
 export default async function Home() {
-  let status: AlpacaStatus = {
-    feedEnabled: false,
-    hasCredentials: false,
-    accountId: null,
-    symbols: [],
-    pollIntervalSeconds: 30,
-    portfolioCount: 0,
-    totalAllocationPercent: 0,
-  };
   let setups: PortfolioSetupListResponse = { setups: [] };
 
   try {
-    const [statusResponse, setupsResponse] = await Promise.all([
-      fetchAlpacaStatus(),
-      fetchSetups(),
-    ]);
-    status = statusResponse;
+    const setupsResponse = await fetchSetups();
     setups = setupsResponse;
   } catch (error) {
     console.error('Failed to load setup metadata', error);
@@ -68,7 +54,6 @@ export default async function Home() {
 
       <SetupComparisonGrid items={comparisonData} />
 
-      <SetupCreateForm />
     </main>
   );
 }
