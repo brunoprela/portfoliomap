@@ -2,8 +2,6 @@
 
 This repository contains a Next.js frontend and a FastAPI backend for building an interactive portfolio experience.
 
-<img width="1143" height="781" alt="Screenshot 2025-11-09 at 7 43 20 PM" src="https://github.com/user-attachments/assets/f4a61a8c-f1d4-4516-b875-4400ffd84d68" />
-
 ## Project Layout
 
 - `frontend/` — Next.js 14 App Router project written in TypeScript.
